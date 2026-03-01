@@ -1,7 +1,7 @@
 # config.py – all tunable parameters (no cv2 imports here)
 
 # Camera & Capture
-CAMERA_INDEX = 1
+CAMERA_INDEX = 0
 CAP_WIDTH = 1920
 CAP_HEIGHT = 1080
 CAP_FPS = 60
