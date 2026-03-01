@@ -2,8 +2,8 @@
 
 # Camera & Capture
 CAMERA_INDEX = 0
-CAP_WIDTH = 1920
-CAP_HEIGHT = 1080
+CAP_WIDTH = 1280
+CAP_HEIGHT = 720
 CAP_FPS = 60
 CAP_BUFFERSIZE = 1
 
@@ -29,4 +29,17 @@ TEXT_COLOR_FPS = (0, 220, 0)
 TEXT_COLOR_INF = (0, 200, 255)
 TEXT_COLOR_LAT = (100, 100, 255)
 
-EXIT_KEY = 27   # ESC   
+EXIT_KEY = 27   # ESC
+
+# Lux Classification Thresholds
+LUX_DIM_THRESHOLD    = 100   # below → Dim
+LUX_BRIGHT_THRESHOLD = 500   # at or above → Bright; between → Indoor
+
+# Hand Size Input Validation (cm)
+HAND_SIZE_MIN_CM = 10.0
+HAND_SIZE_MAX_CM = 30.0
+
+# Session Overlay Text Colours
+TEXT_COLOR_FITZPATRICK = (100, 200, 255)   # light blue
+TEXT_COLOR_SESSION     = (200, 200, 200)   # light grey
+TEXT_COLOR_SETUP       = (255, 255, 255)   # white
