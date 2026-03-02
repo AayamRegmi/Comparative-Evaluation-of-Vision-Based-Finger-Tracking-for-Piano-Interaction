@@ -1,117 +1,161 @@
 # live_preview.py
-# MediaPipe Hands live preview & performance stats
-# All files are in the same folder → simple imports
+# MediaPipe Hands live preview & performance stats with live model switching.
+#
+# Key bindings:
+#   M   – cycle model: MediaPipe Hands → MoveNet Lightning → OpenPose COCO → …
+#   ESC – quit and print final statistics
 
 import cv2
-import mediapipe as mp
 import time
 import numpy as np
+from pathlib import Path
 
-# Import local modules (same folder, no sys.path needed)
-from . import config
-from .stats_collector import StatsCollector
-from .camera_setup import init_camera, RESIZE_INTERPOLATION
+try:
+    from . import config
+    from .stats_collector import StatsCollector
+    from .camera_setup import init_camera, RESIZE_INTERPOLATION
+    from .model_manager import ModelManager
+except ImportError:
+    import sys, os
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import config
+    from stats_collector import StatsCollector
+    from camera_setup import init_camera, RESIZE_INTERPOLATION
+    from model_manager import ModelManager
+
+
+# ---------------------------------------------------------------------------
+# Overlay helpers
+# ---------------------------------------------------------------------------
+
+def _draw_loading_overlay(frame: np.ndarray, model_name: str) -> None:
+    h, w = frame.shape[:2]
+    dim  = frame.copy()
+    cv2.rectangle(dim, (w // 4, h // 2 - 55), (3 * w // 4, h // 2 + 55),
+                  (20, 20, 20), -1)
+    cv2.addWeighted(dim, 0.75, frame, 0.25, 0, frame)
+    cv2.putText(frame, f"Loading {model_name}...",
+                (w // 4 + 20, h // 2 + 12),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.85, config.TEXT_COLOR_LOADING, 2)
+    cv2.putText(frame, "(window may freeze briefly)",
+                (w // 4 + 20, h // 2 + 44),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.55, (160, 160, 160), 1)
+
+
+def _draw_model_label(frame: np.ndarray, model_name: str) -> None:
+    label = f"Model: {model_name}  [M to switch]"
+    (tw, _), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+    x = frame.shape[1] - tw - 10
+    cv2.putText(frame, label, (x, 28),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, config.TEXT_COLOR_MODEL_LABEL, 2)
+
+
+def _draw_stats_overlay(frame: np.ndarray, stats: StatsCollector,
+                        inference_ms: float, total_latency_ms: float) -> None:
+    if not stats.warmup_done:
+        return
+    avg_fps = np.mean(stats.fps_history)
+    y = 35
+    if config.SHOW_FPS:
+        cv2.putText(frame, f"FPS: {avg_fps:4.1f}", (10, y),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.9, config.TEXT_COLOR_FPS, 2)
+        y += 35
+    if config.SHOW_INFERENCE_TIME:
+        cv2.putText(frame, f"Inf: {inference_ms:4.1f} ms", (10, y),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, config.TEXT_COLOR_INF, 2)
+        y += 35
+    if config.SHOW_TOTAL_LATENCY:
+        cv2.putText(frame, f"Lat: {total_latency_ms:4.1f} ms", (10, y),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, config.TEXT_COLOR_LAT, 2)
+
+
+# ---------------------------------------------------------------------------
+# Main preview
+# ---------------------------------------------------------------------------
 
 def run_preview():
-    mp_hands = mp.solutions.hands
-    mp_drawing = mp.solutions.drawing_utils
-    mp_drawing_styles = mp.solutions.drawing_styles
+    project_root = str(Path(__file__).parent.parent)
 
-    # Initialize MediaPipe Hands with config values
-    hands = mp_hands.Hands(
-        static_image_mode=False,
-        max_num_hands=config.MAX_NUM_HANDS,
-        model_complexity=config.MODEL_COMPLEXITY,
-        min_detection_confidence=config.MIN_DETECTION_CONFIDENCE,
-        min_tracking_confidence=config.MIN_TRACKING_CONFIDENCE
-    )
+    mgr = ModelManager(config, project_root)
+    mgr.ensure_loaded()   # load MediaPipe immediately — fast, no download needed
 
-    # Initialize camera using config
     cap = init_camera(config)
 
-    print(f"MediaPipe config: complexity={config.MODEL_COMPLEXITY}, "
-          f"resize={config.RESIZE_WIDTH}x{config.RESIZE_HEIGHT if config.RESIZE_WIDTH else 'native'}, "
-          f"max_hands={config.MAX_NUM_HANDS}\n")
+    print(f"Starting with model: {mgr.current.name}")
+    print("M: cycle model   ESC: quit\n")
 
-    # Initialize stats collector
     stats = StatsCollector(config.WARMUP_FRAMES, config.STAT_FRAMES)
 
-    print("Press ESC to stop and show statistics\n")
+    WIN = "MediaPipe Hand Tracking - Live Preview"
+    process_frame = None
 
     while cap.isOpened():
         loop_start = time.perf_counter()
+
+        # Key input first — keeps the UI responsive
+        key = cv2.waitKey(1) & 0xFF
+        if key == config.EXIT_KEY:
+            break
+        elif key == config.MODEL_SWITCH_KEY:
+            mgr.cycle()
+
+        # Lazy-load current model if not yet initialised
+        # (blocks briefly on first switch to MoveNet / OpenPose)
+        needs_load = not mgr.current.loaded
 
         success, frame = cap.read()
         if not success:
             print("Frame capture failed")
             break
 
-        # Resize if configured
+        # Show loading overlay and skip inference this frame
+        if needs_load:
+            _draw_loading_overlay(frame, mgr.current.name)
+            _draw_model_label(frame, mgr.current.name)
+            cv2.imshow(WIN, frame)
+            mgr.ensure_loaded()   # blocks here — window shows overlay first
+            continue
+
+        # Resize for inference
         if config.RESIZE_WIDTH is not None:
             process_frame = cv2.resize(
                 frame,
                 (config.RESIZE_WIDTH, config.RESIZE_HEIGHT),
-                interpolation=RESIZE_INTERPOLATION
+                interpolation=RESIZE_INTERPOLATION,
             )
         else:
-            process_frame = frame.copy()
-
-        rgb = cv2.cvtColor(process_frame, cv2.COLOR_BGR2RGB)
-        rgb.flags.writeable = False
+            process_frame = frame
 
         # Inference
-        t0 = time.perf_counter()
-        results = hands.process(rgb)
-        t1 = time.perf_counter()
+        t0           = time.perf_counter()
+        result       = mgr.current.infer(process_frame)
+        t1           = time.perf_counter()
         inference_ms = (t1 - t0) * 1000
 
-        # Draw landmarks if enabled
-        if config.DRAW_LANDMARKS and results.multi_hand_landmarks:
-            for hand_landmarks in results.multi_hand_landmarks:
-                mp_drawing.draw_landmarks(
-                    frame,
-                    hand_landmarks,
-                    mp_hands.HAND_CONNECTIONS,
-                    mp_drawing_styles.get_default_hand_landmarks_style(),
-                    mp_drawing_styles.get_default_hand_connections_style()
-                )
+        # Draw landmarks
+        if config.DRAW_LANDMARKS:
+            mgr.current.draw(frame, result)
 
-        # Calculate total latency and update stats
+        # Overlays
         total_latency_ms = (time.perf_counter() - loop_start) * 1000
         stats.update(loop_start, inference_ms, total_latency_ms)
 
-        # Live overlay
-        if stats.warmup_done:
-            avg_fps = np.mean(stats.fps_history)
-            y = 35
-            if config.SHOW_FPS:
-                cv2.putText(frame, f"FPS: {avg_fps:4.1f}", (10, y),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.9, config.TEXT_COLOR_FPS, 2)
-                y += 35
-            if config.SHOW_INFERENCE_TIME:
-                cv2.putText(frame, f"Inf: {inference_ms:4.1f} ms", (10, y),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, config.TEXT_COLOR_INF, 2)
-                y += 35
-            if config.SHOW_TOTAL_LATENCY:
-                cv2.putText(frame, f"Total lat: {total_latency_ms:4.1f} ms", (10, y),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, config.TEXT_COLOR_LAT, 2)
+        _draw_stats_overlay(frame, stats, inference_ms, total_latency_ms)
+        _draw_model_label(frame, mgr.current.name)
 
-        cv2.imshow("MediaPipe Hand Tracking - Live Preview", frame)
+        cv2.imshow(WIN, frame)
 
-        if cv2.waitKey(1) & 0xFF == config.EXIT_KEY:
-            break
+    # Final stats use process_frame dimensions (may be None if no frame captured)
+    if process_frame is not None:
+        stats.print_final_stats(
+            process_frame.shape[1],
+            process_frame.shape[0],
+            config.MODEL_COMPLEXITY,
+        )
 
-    # Print final statistics
-    stats.print_final_stats(
-        process_frame.shape[1],
-        process_frame.shape[0],
-        config.MODEL_COMPLEXITY
-    )
-
-    # Cleanup
+    mgr.close_all()
     cap.release()
     cv2.destroyAllWindows()
-    hands.close()
 
 
 if __name__ == "__main__":

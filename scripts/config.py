@@ -43,3 +43,23 @@ HAND_SIZE_MAX_CM = 30.0
 TEXT_COLOR_FITZPATRICK = (100, 200, 255)   # light blue
 TEXT_COLOR_SESSION     = (200, 200, 200)   # light grey
 TEXT_COLOR_SETUP       = (255, 255, 255)   # white
+
+# ---------------------------------------------------------------------------
+# Multi-model tracking (live_preview.py)
+# ---------------------------------------------------------------------------
+
+MODEL_SWITCH_KEY = ord("m")   # press M to cycle models
+
+MODEL_MEDIAPIPE     = "MediaPipe Hands"
+MODEL_OPENPOSE_HAND = "OpenPose Hand"
+MODEL_ORDER         = [MODEL_MEDIAPIPE, MODEL_OPENPOSE_HAND]
+
+# OpenPose Hand — 21 finger keypoints (downloaded via download_openpose_model.py)
+OPENPOSE_HAND_PROTOTXT             = "models/openpose_hand.prototxt"
+OPENPOSE_HAND_CAFFEMODEL           = "models/openpose_hand.caffemodel"
+OPENPOSE_HAND_CONFIDENCE_THRESHOLD = 0.1
+OPENPOSE_HAND_INPUT_WIDTH          = 368
+OPENPOSE_HAND_INPUT_HEIGHT         = 368
+
+TEXT_COLOR_MODEL_LABEL = (255, 200,  50)   # amber
+TEXT_COLOR_LOADING     = (200,  80,  80)   # muted red

@@ -71,6 +71,10 @@ Thumbs.db
 *.saved_model/
 .tensorboard-info/
 
+# Downloaded model weights (not committed — run download_openpose_model.py)
+models/*.caffemodel
+models/*.prototxt
+
 # macOS / Windows junk
 .DS_Store
 Thumbs.db
@@ -94,3 +98,5 @@ nox/
 
 # Documentation build output
 docs/_build/
+
+.claude
