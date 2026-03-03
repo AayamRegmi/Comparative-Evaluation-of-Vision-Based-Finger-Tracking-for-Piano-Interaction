@@ -28,6 +28,8 @@ try:
     from .fitzpatrick_detector import detect_skin_type
     from .lux_calculator import lux_to_label
     from .stats_collector import StatsCollector
+    from .midi_recorder import MidiRecorder, FrameLogger, list_midi_input_ports
+    from .key_calibration import KeyMask, draw_mask_handles, MaskControlPanel
 except ImportError:
     import sys
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -36,6 +38,8 @@ except ImportError:
     from fitzpatrick_detector import detect_skin_type
     from lux_calculator import lux_to_label
     from stats_collector import StatsCollector
+    from midi_recorder import MidiRecorder, FrameLogger, list_midi_input_ports
+    from key_calibration import KeyMask, draw_mask_handles, MaskControlPanel
 
 # Root folder for all raw participant data
 _RAW_DIR = Path(__file__).parent.parent / "data" / "raw"
@@ -58,10 +62,11 @@ def _next_participant_id() -> int:
     return max(nums, default=0) + 1
 
 
-def _start_recording(frame, pid: int) -> tuple:
+def _start_recording(frame, pid: int, fps: float) -> tuple:
     """
     Create the participant folder, open a VideoWriter, and return
     (writer, out_dir, video_path).
+    fps should be the actual measured frame rate, not config.CAP_FPS.
     """
     pid_str = f"p{pid:03d}"
     out_dir = _RAW_DIR / pid_str
@@ -70,14 +75,17 @@ def _start_recording(frame, pid: int) -> tuple:
     video_path = out_dir / f"{pid_str}.mp4"
     h, w = frame.shape[:2]
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    writer = cv2.VideoWriter(str(video_path), fourcc, config.CAP_FPS, (w, h))
+    writer = cv2.VideoWriter(str(video_path), fourcc, fps, (w, h))
     return writer, out_dir, video_path
 
 
 def _save_session_metadata(out_dir: Path, pid: int, lux_value: float,
                             lux_label: str, hand_size_cm: float,
                             fitz_type: int, fitz_label: str,
-                            video_path: Path, rec_start: str, rec_stop: str):
+                            video_path: Path, rec_start: str, rec_stop: str,
+                            midi_port: str = None, frames_csv: Path = None,
+                            midi_jsonl: Path = None, midi_mid: Path = None,
+                            video_fps: float = None):
     """Write session metadata to <pid>_session.json."""
     meta = {
         "participant_id": f"p{pid:03d}",
@@ -89,6 +97,11 @@ def _save_session_metadata(out_dir: Path, pid: int, lux_value: float,
         "fitzpatrick_type":  fitz_type,
         "fitzpatrick_label": fitz_label,
         "video_file":      video_path.name,
+        "video_fps":       round(video_fps, 2) if video_fps else None,
+        "frames_csv":      frames_csv.name  if frames_csv  else None,
+        "midi_port":       midi_port,
+        "midi_jsonl":      midi_jsonl.name  if midi_jsonl  else None,
+        "midi_mid":        midi_mid.name    if midi_mid    else None,
     }
     out_path = out_dir / f"p{pid:03d}_session.json"
     with open(out_path, "w") as f:
@@ -129,6 +142,31 @@ def _create_window():
 
 
 # ---------------------------------------------------------------------------
+# Camera helpers
+# ---------------------------------------------------------------------------
+
+def _probe_cameras(max_index: int = 4) -> list:
+    """Return list of camera indices that can be opened (probes 0..max_index)."""
+    found = []
+    for idx in range(max_index + 1):
+        cap = cv2.VideoCapture(idx, cv2.CAP_DSHOW)
+        if cap.isOpened():
+            found.append(idx)
+        cap.release()
+    return found if found else [0]
+
+
+def _open_cap(cam_idx: int) -> cv2.VideoCapture:
+    """Open camera at cam_idx with standard config properties."""
+    cap = cv2.VideoCapture(cam_idx, cv2.CAP_DSHOW)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH,  config.CAP_WIDTH)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, config.CAP_HEIGHT)
+    cap.set(cv2.CAP_PROP_FPS,          config.CAP_FPS)
+    cap.set(cv2.CAP_PROP_BUFFERSIZE,   config.CAP_BUFFERSIZE)
+    return cap
+
+
+# ---------------------------------------------------------------------------
 # Setup screen
 # ---------------------------------------------------------------------------
 
@@ -149,15 +187,22 @@ def _draw_input_box(frame, label, value, unit, y, active):
                 cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
 
 
-def _run_setup_screen(cap):
+def _run_setup_screen(cap, midi_ports: list, midi_port_idx: int,
+                      avail_cams: list = None, cam_idx: int = 0):
     """
     Display setup overlay on the live camera feed.
     Collects lux level and hand size (cm) via keyboard.
+    Shows detected MIDI port; [ and ] cycle through available ports.
+    Shows camera selector; , and . cycle through available cameras.
 
-    TAB: switch field   ENTER: confirm   BACKSPACE: delete   ESC: quit
+    TAB: switch field   ENTER: confirm   BACKSPACE: delete
+    [/]: cycle MIDI port   ,/.: cycle camera   ESC: quit
 
-    Returns (lux: float, hand_size_cm: float) or (None, None) on ESC.
+    Returns (lux, hand_size_cm, midi_port_idx, cam_idx, cap)
+    or (None, None, 0, cam_idx, cap) on ESC.
     """
+    if avail_cams is None:
+        avail_cams = [cam_idx]
     fields = [
         {"label": "Lux Level", "unit": "lux", "value": ""},
         {"label": "Hand Size", "unit": "cm",  "value": ""},
@@ -170,6 +215,10 @@ def _run_setup_screen(cap):
         "Indoor": (100, 220, 100),
         "Bright": (0,   255, 255),
     }
+
+    # MIDI port display colours
+    MIDI_COLOR_OK   = (80, 220, 80)
+    MIDI_COLOR_NONE = (60, 60, 200)
 
     while True:
         ret, frame = cap.read()
@@ -200,8 +249,45 @@ def _run_setup_screen(cap):
         _draw_input_box(frame, fields[1]["label"], fields[1]["value"],
                         fields[1]["unit"], 280, active == 1)
 
+        # MIDI port display (below hand-size box, not a text-entry field)
+        midi_y = 410
+        cv2.putText(frame, "MIDI Input Port", (80, midi_y),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.65, (200, 200, 200), 1)
+        midi_box_y = midi_y + 8
+        if midi_ports:
+            port_label = midi_ports[midi_port_idx]
+            midi_col   = MIDI_COLOR_OK
+            cycle_hint = f"  [ ] to cycle  ({midi_port_idx + 1}/{len(midi_ports)})"
+        else:
+            port_label = "No MIDI device found"
+            midi_col   = MIDI_COLOR_NONE
+            cycle_hint = "  (connect piano via USB and restart)"
+        cv2.rectangle(frame, (80, midi_box_y), (500, midi_box_y + 40), (40, 40, 40), -1)
+        cv2.rectangle(frame, (80, midi_box_y), (500, midi_box_y + 40), midi_col, 2)
+        cv2.putText(frame, port_label, (88, midi_box_y + 28),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.65, midi_col, 2)
+        cv2.putText(frame, cycle_hint, (80, midi_box_y + 58),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (130, 130, 130), 1)
+
+        # Camera selector (below MIDI section)
+        cam_y = 510
+        cv2.putText(frame, "Camera", (80, cam_y),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.65, (200, 200, 200), 1)
+        cam_box_y = cam_y + 8
+        cam_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        cam_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        cam_label = f"Camera {cam_idx}  ({cam_w} x {cam_h})"
+        cam_hint2 = (f"  c/C to cycle  ({avail_cams.index(cam_idx) + 1}/{len(avail_cams)})"
+                     if len(avail_cams) > 1 else "  (only camera detected)")
+        cv2.rectangle(frame, (80, cam_box_y), (500, cam_box_y + 40), (40, 40, 40), -1)
+        cv2.rectangle(frame, (80, cam_box_y), (500, cam_box_y + 40), (80, 220, 80), 2)
+        cv2.putText(frame, cam_label, (88, cam_box_y + 28),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.65, (80, 220, 80), 2)
+        cv2.putText(frame, cam_hint2, (80, cam_box_y + 58),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (130, 130, 130), 1)
+
         cv2.putText(frame,
-                    "TAB: switch field    ENTER: confirm    ESC: quit",
+                    "TAB: switch field    ENTER: confirm    [/]: MIDI port    c/C: camera    ESC: quit",
                     (80, frame.shape[0] - 60),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.55, (140, 140, 140), 1)
         if error_msg:
@@ -213,7 +299,24 @@ def _run_setup_screen(cap):
         key = cv2.waitKey(30) & 0xFF
 
         if key == config.EXIT_KEY:
-            return None, None
+            return None, None, 0, cam_idx, cap
+
+        elif key == ord("[") and midi_ports:
+            midi_port_idx = (midi_port_idx - 1) % len(midi_ports)
+
+        elif key == ord("]") and midi_ports:
+            midi_port_idx = (midi_port_idx + 1) % len(midi_ports)
+
+        elif key in (ord("c"), ord("C")) and len(avail_cams) > 1:
+            delta   = -1 if key == ord("C") else 1
+            new_idx = avail_cams[(avail_cams.index(cam_idx) + delta) % len(avail_cams)]
+            new_cap = _open_cap(new_idx)
+            if new_cap.isOpened():
+                cap.release()
+                cap     = new_cap
+                cam_idx = new_idx
+            else:
+                new_cap.release()
 
         elif key == 9:                          # Tab
             active = (active + 1) % len(fields)
@@ -235,7 +338,7 @@ def _run_setup_screen(cap):
                              f"{config.HAND_SIZE_MIN_CM}–{config.HAND_SIZE_MAX_CM} cm")
                 continue
 
-            return lux_val, hand_val
+            return lux_val, hand_val, midi_port_idx, cam_idx, cap
 
         elif key in (8, 127):                   # Backspace
             fields[active]["value"] = fields[active]["value"][:-1]
@@ -247,7 +350,7 @@ def _run_setup_screen(cap):
             fields[active]["value"] += chr(key)
             error_msg = ""
 
-    return None, None
+    return None, None, 0, cam_idx, cap
 
 
 # ---------------------------------------------------------------------------
@@ -265,12 +368,30 @@ def run_record():
         min_tracking_confidence=config.MIN_TRACKING_CONFIDENCE,
     )
 
+    # --- Probe available cameras BEFORE opening the main cap ---
+    # (probing after init_camera would try to open camera 0 twice on DirectShow,
+    #  corrupting the stream and causing cap.read() to fail immediately)
+    avail_cams = _probe_cameras()
+    cam_idx    = config.CAMERA_INDEX
+    if cam_idx not in avail_cams:
+        avail_cams.insert(0, cam_idx)
+
     cap = init_camera(config)
     _create_window()
 
+    # --- Detect MIDI ports before setup ---
+    midi_ports    = list_midi_input_ports()
+    midi_port_idx = 0
+    if midi_ports:
+        print(f"MIDI ports found: {midi_ports}")
+    else:
+        print("WARNING: No MIDI input ports detected. Recording will proceed without MIDI.")
+
     # --- Setup screen ---
     print("Waiting for session setup...")
-    lux_value, hand_size_cm = _run_setup_screen(cap)
+    lux_value, hand_size_cm, midi_port_idx, cam_idx, cap = _run_setup_screen(
+        cap, midi_ports, midi_port_idx, avail_cams, cam_idx
+    )
 
     if lux_value is None:
         cap.release()
@@ -278,10 +399,16 @@ def run_record():
         hands.close()
         return
 
-    lux_label_str = lux_to_label(lux_value)
-    pid           = _next_participant_id()
+    # Frame dimensions (may differ if user switched camera during setup)
+    _fw = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    _fh = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+    lux_label_str  = lux_to_label(lux_value)
+    pid            = _next_participant_id()
+    midi_port_name = midi_ports[midi_port_idx] if midi_ports else None
     print(f"Lux: {lux_value:.0f} lux  ->  {lux_label_str}  |  Hand size: {hand_size_cm} cm")
     print(f"Participant ID: p{pid:03d}")
+    print(f"MIDI port: {midi_port_name or 'none'}")
     print("SPACE: rec/stop   S: stats   R: retest fitz   ESC: quit\n")
 
     # --- Session state ---
@@ -296,8 +423,38 @@ def run_record():
     out_dir     = None
     video_path  = None
     rec_start   = None
+    rec_fps     = float(config.CAP_FPS)   # updated to actual FPS when recording starts
+
+    # MIDI / frame-sync state
+    midi_rec     = None   # MidiRecorder instance (active during recording)
+    frame_logger = None   # FrameLogger instance  (active during recording)
+    rec_t0       = 0.0    # perf_counter() at recording start (shared clock origin)
 
     stats = StatsCollector(config.WARMUP_FRAMES, config.STAT_FRAMES)
+
+    # Load key calibration mask (or create default)
+    _cal_dir  = Path(__file__).parent.parent / "data" / "calibration"
+    _cal_file = _cal_dir / "key_centers.json"
+    if _cal_file.exists():
+        try:
+            mask = KeyMask.load(_cal_file)
+            print(f"Key calibration loaded: {mask.num_white} white keys  (M to toggle, drag to adjust)")
+        except Exception as _e:
+            print(f"Note: key calibration not loaded ({_e}), using default")
+            mask = KeyMask.default(_fw, _fh)
+    else:
+        mask = KeyMask.default(_fw, _fh)
+        print("No calibration file found, using default layout  (M to toggle, drag to adjust)")
+    show_mask = True
+
+    # Mouse callback: drag to resize/move, auto-save when drag ends
+    def _on_mouse(event, x, y, flags, _):
+        if mask.on_mouse(event, x, y, flags):
+            mask.save(_cal_dir, _fw, _fh)
+
+    cv2.setMouseCallback(_WIN_NAME, _on_mouse)
+
+    panel = MaskControlPanel(mask, save_fn=lambda: mask.save(_cal_dir, _fw, _fh))
 
     lux_colors = {
         "Dim":    (100, 100, 255),
@@ -341,9 +498,17 @@ def run_record():
         # --- Save raw frame (no overlays) to video file ---
         if recording and writer is not None:
             writer.write(frame)
+            if frame_logger is not None:
+                frame_logger.log()
 
         # --- All overlays go on a display copy, keeping the saved frame clean ---
         display = frame.copy()
+
+        # Key calibration mask (drawn first so all other overlays sit on top)
+        if show_mask:
+            mask.draw(display)
+            if not recording:
+                draw_mask_handles(display, mask)
 
         # Stats overlay (top-left)
         if show_stats:
@@ -400,13 +565,15 @@ def run_record():
 
         # Key hint bar (bottom)
         hint_y    = display.shape[0] - 18
-        st_state  = "ON" if show_stats  else "OFF"
-        rec_state = "STOP" if recording else "REC"
+        st_state   = "ON" if show_stats else "OFF"
+        rec_state  = "STOP" if recording else "REC"
+        mask_part  = f"  M:mask({'ON' if show_mask else 'OFF'})  N:ctrl({'ON' if panel.visible else 'OFF'})"
         cv2.putText(display,
-                    f"SPACE:{rec_state}  S:stats({st_state})  R:retest fitz  ESC:quit",
+                    f"SPACE:{rec_state}  S:stats({st_state})  R:fitz{mask_part}  ESC:quit",
                     (10, hint_y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (120, 120, 120), 1)
 
         cv2.imshow(_WIN_NAME, display)
+        panel.render()
 
         key = cv2.waitKey(1) & 0xFF
 
@@ -414,15 +581,41 @@ def run_record():
             break
         elif key == ord(" "):
             if not recording:
-                # Start recording
-                writer, out_dir, video_path = _start_recording(frame, pid)
+                # Measure actual FPS from recent loop timing before opening writer
+                if stats.warmup_done and stats.fps_history:
+                    rec_fps = float(np.mean(list(stats.fps_history)[-30:]))
+                    rec_fps = max(1.0, min(rec_fps, float(config.CAP_FPS)))
+                else:
+                    rec_fps = float(config.CAP_FPS)
+                # Start recording — establish shared clock origin first
+                rec_t0    = time.perf_counter()
                 rec_start = datetime.now().isoformat(timespec="seconds")
+                writer, out_dir, video_path = _start_recording(frame, pid, rec_fps)
+                frame_logger = FrameLogger(rec_t0)
+                if midi_port_name:
+                    midi_rec = MidiRecorder(midi_port_name)
+                    midi_rec.start(rec_t0)
                 recording = True
-                print(f"Recording STARTED  ({rec_start})  ->  {video_path}")
+                print(f"Recording STARTED  ({rec_start})  FPS={rec_fps:.1f}  ->  {video_path}")
+                if midi_rec:
+                    print(f"MIDI recording on: {midi_port_name}")
             else:
                 # Stop recording
                 recording = False
-                rec_stop = datetime.now().isoformat(timespec="seconds")
+                rec_stop  = datetime.now().isoformat(timespec="seconds")
+
+                # Stop MIDI listener before flushing files
+                midi_jsonl = midi_mid = frames_csv = None
+                if midi_rec is not None:
+                    midi_rec.stop()
+                    pid_str = f"p{pid:03d}"
+                    midi_jsonl, midi_mid = midi_rec.save(out_dir, pid_str)
+                    midi_rec = None
+                if frame_logger is not None:
+                    pid_str    = f"p{pid:03d}"
+                    frames_csv = frame_logger.save(out_dir, pid_str)
+                    frame_logger = None
+
                 if writer is not None:
                     writer.release()
                     writer = None
@@ -430,10 +623,18 @@ def run_record():
                     out_dir, pid, lux_value, lux_label_str,
                     hand_size_cm, fitz_type, fitz_label,
                     video_path, rec_start, rec_stop,
+                    midi_port=midi_port_name,
+                    frames_csv=frames_csv,
+                    midi_jsonl=midi_jsonl,
+                    midi_mid=midi_mid,
                 )
                 print(f"Recording STOPPED  ({rec_stop})")
         elif key == ord("s") or key == ord("S"):
             show_stats = not show_stats
+        elif key == ord("m") or key == ord("M"):
+            show_mask = not show_mask
+        elif key == ord("n") or key == ord("N"):
+            panel.toggle()
         elif key == ord("r") or key == ord("R"):
             fitz_detected  = False
             fitz_type      = 0
@@ -445,11 +646,26 @@ def run_record():
     if writer is not None:
         rec_stop = datetime.now().isoformat(timespec="seconds")
         writer.release()
+
+        midi_jsonl = midi_mid = frames_csv = None
+        if midi_rec is not None:
+            midi_rec.stop()
+            if out_dir:
+                pid_str = f"p{pid:03d}"
+                midi_jsonl, midi_mid = midi_rec.save(out_dir, pid_str)
+        if frame_logger is not None and out_dir:
+            pid_str    = f"p{pid:03d}"
+            frames_csv = frame_logger.save(out_dir, pid_str)
+
         if out_dir and video_path:
             _save_session_metadata(
                 out_dir, pid, lux_value, lux_label_str,
                 hand_size_cm, fitz_type, fitz_label,
                 video_path, rec_start, rec_stop,
+                midi_port=midi_port_name,
+                frames_csv=frames_csv,
+                midi_jsonl=midi_jsonl,
+                midi_mid=midi_mid,
             )
 
     stats.print_final_stats(frame.shape[1], frame.shape[0], config.MODEL_COMPLEXITY)

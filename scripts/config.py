@@ -63,3 +63,17 @@ OPENPOSE_HAND_INPUT_HEIGHT         = 368
 
 TEXT_COLOR_MODEL_LABEL = (255, 200,  50)   # amber
 TEXT_COLOR_LOADING     = (200,  80,  80)   # muted red
+
+# ---------------------------------------------------------------------------
+# Key Calibration Mask  (key_calibration.py + record.py)
+# All colours are BGR tuples.
+# ---------------------------------------------------------------------------
+
+MASK_WHITE_FILL    = (210, 210, 210)   # white-key fill
+MASK_WHITE_BORDER  = (0,   230,   0)   # green  – white-key outline
+MASK_BLACK_FILL    = ( 35,  35,  35)   # black-key fill
+MASK_BLACK_BORDER  = (0,   220, 220)   # yellow – black-key outline (BGR: cyan)
+MASK_DOT_WHITE     = (0,    50, 255)   # red    – centre dot on white keys
+MASK_DOT_BLACK     = (0,   130, 255)   # orange – centre dot on black keys
+MASK_C_NOTE_LABEL  = (0,   200, 255)   # amber  – C-note text labels
+MASK_ALPHA         = 0.40              # overlay blend (0 = invisible, 1 = solid)
