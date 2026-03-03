@@ -18,6 +18,7 @@ Controls:
 """
 
 import json
+import math
 import os
 import time
 from pathlib import Path
@@ -105,8 +106,11 @@ class KeyMask:
 
     EDGE_TOL = 12   # pixels from edge that triggers a resize handle
 
+    CORNER_TOL = 20   # px — click radius that triggers a corner warp handle
+
     def __init__(self, ox: int, oy: int, wkw: int, wkh: int,
-                 num_white: int = 29, start_midi: int = 48):
+                 num_white: int = 29, start_midi: int = 48,
+                 corners: np.ndarray = None):
         self.ox          = ox
         self.oy          = oy
         self.wkw         = wkw
@@ -115,75 +119,141 @@ class KeyMask:
         self.start_midi  = start_midi
         self._keys       = None
         self._dirty      = True
+        # Perspective warp — 4 corners in screen space (TL, TR, BR, BL)
+        if corners is not None:
+            self.corners = np.array(corners, dtype=np.float32)
+        else:
+            self._init_corners()
+        self._H       = None    # cached homography
+        self._H_dirty = True
         # drag state
         self._drag       = None
         self._mx0 = self._my0 = 0
         self._ox0 = self._oy0 = 0
         self._wkw0 = self._wkh0 = 0
+        self._corners0: np.ndarray = None   # snapshot at drag-start
 
     # -- Key layout (lazy) --
 
     @property
     def keys(self) -> list:
-        if self._dirty:
-            self._keys  = build_key_layout(self.start_midi, self.num_white,
-                                           self.ox, self.oy, self.wkw, self.wkh)
+        if self._dirty or self._H_dirty:
+            flat = build_key_layout(self.start_midi, self.num_white,
+                                    self.ox, self.oy, self.wkw, self.wkh)
+            H  = self._homography()   # resets _H_dirty
+            # Warp every key centre through H
+            flat_pts = np.array([[k['center']] for k in flat], dtype=np.float32)
+            warped   = cv2.perspectiveTransform(flat_pts, H).reshape(-1, 2)
+            for k, (cx, cy) in zip(flat, warped):
+                k['center'] = (int(round(cx)), int(round(cy)))
+            # Warp each key rect into a polygon (for pointPolygonTest in test.py)
+            for k in flat:
+                x, y, w, h = k['rect']
+                src_pts = np.array([[x, y], [x+w, y], [x+w, y+h], [x, y+h]],
+                                   dtype=np.float32).reshape(4, 1, 2)
+                k['polygon'] = cv2.perspectiveTransform(src_pts, H).reshape(4, 2).astype(np.int32)
+            self._keys  = flat
             self._dirty = False
         return self._keys
 
     def mark_dirty(self) -> None:
-        self._dirty = True
+        self._dirty   = True
+        self._H_dirty = True
+        self._H       = None
+
+    # -- Perspective warp helpers --
+
+    def _init_corners(self) -> None:
+        """Set corners to the current rectangular bounding box."""
+        total_w = self.num_white * self.wkw
+        self.corners = np.array([
+            [self.ox,           self.oy          ],
+            [self.ox + total_w, self.oy          ],
+            [self.ox + total_w, self.oy + self.wkh],
+            [self.ox,           self.oy + self.wkh],
+        ], dtype=np.float32)
+
+    def reset_warp(self) -> None:
+        """Snap corners back to a perfect rectangle (public API for V key / button)."""
+        self._init_corners()
+        self._H_dirty = True
+        self._H       = None
+        self._dirty   = True
+
+    def _homography(self) -> np.ndarray:
+        """Return the cached perspective matrix (flat layout → warped corners)."""
+        if self._H is None or self._H_dirty:
+            total_w = self.num_white * self.wkw
+            src = np.array([
+                [self.ox,           self.oy          ],
+                [self.ox + total_w, self.oy          ],
+                [self.ox + total_w, self.oy + self.wkh],
+                [self.ox,           self.oy + self.wkh],
+            ], dtype=np.float32)
+            self._H       = cv2.getPerspectiveTransform(src, self.corners)
+            self._H_dirty = False
+        return self._H
 
     # -- Drawing --
 
     def draw(self, frame: np.ndarray, alpha: float = None) -> None:
         """
-        Blend keyboard overlay onto frame in-place.
-        Only processes the keyboard bounding-box ROI (not the whole frame).
+        Blend perspective-warped keyboard overlay onto frame in-place.
+        Operates on the bounding-box ROI of the warped quad for performance.
         """
         if alpha is None:
             alpha = config.MASK_ALPHA
 
         fh, fw = frame.shape[:2]
-        y1 = max(0, self.oy)
-        y2 = min(fh, self.oy + self.wkh)
-        x1 = max(0, self.ox)
-        x2 = min(fw, self.ox + self.num_white * self.wkw)
-        if x2 <= x1 or y2 <= y1:
+        H = self._homography()
+
+        # Bounding box of the warped quad
+        bx1 = max(0, int(np.floor(self.corners[:, 0].min())))
+        by1 = max(0, int(np.floor(self.corners[:, 1].min())))
+        bx2 = min(fw, int(np.ceil(self.corners[:, 0].max())) + 1)
+        by2 = min(fh, int(np.ceil(self.corners[:, 1].max())) + 1)
+        if bx2 <= bx1 or by2 <= by1:
             return
 
-        region  = frame[y1:y2, x1:x2]
-        ov      = region.copy()
-        ox_off  = -x1
-        oy_off  = -y1
+        region = frame[by1:by2, bx1:bx2]
+        ov     = region.copy()
+        off    = np.array([bx1, by1])
+
+        def _warp_pts(x, y, w, h) -> np.ndarray:
+            """Perspective-transform a flat key rect into a warped polygon (int32)."""
+            src = np.array([[x, y], [x+w, y], [x+w, y+h], [x, y+h]],
+                           dtype=np.float32).reshape(4, 1, 2)
+            dst = cv2.perspectiveTransform(src, H).reshape(4, 2)
+            return (dst - off).astype(np.int32)
 
         # White keys first (behind black)
         for k in self.keys:
             if k['key_type'] == 'white':
-                x, y, w, h = k['rect']
-                rx, ry = x + ox_off, y + oy_off
-                cv2.rectangle(ov, (rx, ry), (rx + w, ry + h), config.MASK_WHITE_FILL,   -1)
-                cv2.rectangle(ov, (rx, ry), (rx + w, ry + h), config.MASK_WHITE_BORDER,  2)
-                if w >= 16:
+                pts = _warp_pts(*k['rect'])
+                cv2.fillPoly(ov,   [pts], config.MASK_WHITE_FILL)
+                cv2.polylines(ov,  [pts], True, config.MASK_WHITE_BORDER, 2)
+                if k['rect'][2] >= 16:
                     semi  = k['midi_note'] % 12
                     label = k['note_name'] if semi == 0 else _NOTE_NAMES[semi]
                     col   = config.MASK_C_NOTE_LABEL if semi == 0 else (70, 70, 70)
-                    fs    = 0.33 if w >= 22 else 0.26
-                    cv2.putText(ov, label, (rx + 2, ry + h - 6),
+                    fs    = 0.33 if k['rect'][2] >= 22 else 0.26
+                    # Place label near the warped bottom-left corner of the key
+                    lx = int(pts[3][0]) + 2
+                    ly = int(pts[3][1]) - 4
+                    cv2.putText(ov, label, (lx, ly),
                                 cv2.FONT_HERSHEY_SIMPLEX, fs, col, 1)
 
         # Black keys on top
         for k in self.keys:
             if k['key_type'] == 'black':
-                x, y, w, h = k['rect']
-                rx, ry = x + ox_off, y + oy_off
-                cv2.rectangle(ov, (rx, ry), (rx + w, ry + h), config.MASK_BLACK_FILL,   -1)
-                cv2.rectangle(ov, (rx, ry), (rx + w, ry + h), config.MASK_BLACK_BORDER,  2)
+                pts = _warp_pts(*k['rect'])
+                cv2.fillPoly(ov,  [pts], config.MASK_BLACK_FILL)
+                cv2.polylines(ov, [pts], True, config.MASK_BLACK_BORDER, 2)
 
-        # Blend ROI in-place (region is a view → writes back to frame directly)
+        # Blend ROI in-place
         cv2.addWeighted(ov, alpha, region, 1.0 - alpha, 0, region)
 
-        # Centre dots: drawn on full frame, fully opaque
+        # Centre dots: drawn on full frame, fully opaque (centres already warped)
         for k in self.keys:
             cx, cy = k['center']
             col = config.MASK_DOT_WHITE if k['key_type'] == 'white' else config.MASK_DOT_BLACK
@@ -204,6 +274,7 @@ class KeyMask:
                 self._mx0, self._my0   = x, y
                 self._ox0, self._oy0   = self.ox, self.oy
                 self._wkw0, self._wkh0 = self.wkw, self.wkh
+                self._corners0         = self.corners.copy()
 
         elif event == cv2.EVENT_LBUTTONUP:
             ended      = self._drag is not None
@@ -215,12 +286,19 @@ class KeyMask:
 
         elif event == cv2.EVENT_MOUSEWHEEL:
             self.num_white = max(4, min(52, self.num_white + (1 if flags > 0 else -1)))
+            self._init_corners()    # reset warp when key count changes via scroll
             self.mark_dirty()
 
         return False
 
     def _hit_test(self, x: int, y: int):
         """Return drag-type string or None if outside overlay."""
+        # 1. Corner warp handles — highest priority
+        for i, (cx, cy) in enumerate(self.corners):
+            if math.hypot(x - cx, y - cy) <= self.CORNER_TOL:
+                return f'corner_{i}'
+
+        # 2. Move / edge-resize — based on rectangular bounding box
         right  = self.ox + self.num_white * self.wkw
         bottom = self.oy + self.wkh
         t      = self.EDGE_TOL
@@ -233,12 +311,7 @@ class KeyMask:
         nt = y <= self.oy + t
         nb = y >= bottom - t
 
-        # Corners first (highest priority)
-        if nt and nl: return 'tl'
-        if nt and nr: return 'tr'
-        if nb and nl: return 'bl'
-        if nb and nr: return 'br'
-        # Edges
+        # Edges (corners now reserved for perspective drag, not resize)
         if nt: return 't'
         if nb: return 'b'
         if nl: return 'l'
@@ -246,34 +319,45 @@ class KeyMask:
         return 'move'
 
     def _apply_drag(self, dx: int, dy: int) -> None:
-        t       = self._drag
+        t = self._drag
+
+        # -- Perspective corner warp --
+        if t.startswith('corner_'):
+            i = int(t[7:])
+            self.corners[i] = self._corners0[i] + np.array([dx, dy], dtype=np.float32)
+            self._H_dirty = True
+            self._dirty   = True
+            return
+
         right0  = self._ox0 + self.num_white * self._wkw0
         bottom0 = self._oy0 + self._wkh0
 
         if t == 'move':
-            self.ox = self._ox0 + dx
-            self.oy = self._oy0 + dy
+            # Translate both rect origin and all 4 corners
+            self.ox      = self._ox0 + dx
+            self.oy      = self._oy0 + dy
+            self.corners = self._corners0 + np.array([dx, dy], dtype=np.float32)
+            self._H_dirty = True
         else:
-            # Top component: bottom edge stays fixed
+            # Edge resize — resets warp to rectangle
             if t in ('t', 'tl', 'tr'):
                 new_wkh  = max(20, bottom0 - (self._oy0 + dy))
                 self.oy  = bottom0 - new_wkh
                 self.wkh = new_wkh
 
-            # Bottom component: top edge stays fixed
             if t in ('b', 'bl', 'br'):
                 self.wkh = max(20, self._wkh0 + dy)
 
-            # Left component: right edge stays fixed
             if t in ('l', 'tl', 'bl'):
                 new_wkw  = max(6.0, (right0 - self._ox0 - dx) / self.num_white)
                 self.ox  = round(right0 - self.num_white * new_wkw)
                 self.wkw = max(6, round(new_wkw))
 
-            # Right component: left edge stays fixed
             if t in ('r', 'tr', 'br'):
                 new_right = right0 + dx
                 self.wkw  = max(6, round((new_right - self._ox0) / self.num_white))
+
+            self._init_corners()    # reset warp on resize
 
         self.mark_dirty()
 
@@ -291,6 +375,7 @@ class KeyMask:
             "white_key_height_px": self.wkh,
             "overlay_x":           self.ox,
             "overlay_y":           self.oy,
+            "corners": self.corners.tolist(),   # [[x,y], …] TL TR BR BL
             "keys": [
                 {"midi_note": k['midi_note'], "note_name": k['note_name'],
                  "key_type":  k['key_type'],
@@ -307,9 +392,11 @@ class KeyMask:
     def load(cls, path) -> "KeyMask":
         with open(path) as f:
             c = json.load(f)
+        corners = np.array(c['corners'], dtype=np.float32) if 'corners' in c else None
         return cls(c['overlay_x'], c['overlay_y'],
                    c['white_key_width_px'], c['white_key_height_px'],
-                   c['num_white_keys'], c['start_midi'])
+                   c['num_white_keys'], c['start_midi'],
+                   corners=corners)
 
     @classmethod
     def default(cls, frame_w: int, frame_h: int) -> "KeyMask":
@@ -323,28 +410,38 @@ class KeyMask:
 # ---------------------------------------------------------------------------
 
 def draw_mask_handles(frame: np.ndarray, mask: KeyMask) -> None:
-    """Draw 8 Photoshop-style resize handles on the mask outline."""
+    """
+    Draw the warped-quad outline, 4 corner warp handles (circles), and
+    4 edge-midpoint resize handles (squares) on the mask.
+    """
+    # Warped quad outline
+    corners_i = mask.corners.astype(np.int32)
+    cv2.polylines(frame, [corners_i], True, (180, 180, 180), 1)
+
+    # 4 corner circles — warp handles (white fill, black outline)
+    cr = 9   # circle radius
+    for cx, cy in corners_i:
+        cv2.circle(frame, (cx, cy), cr + 1, (0, 0, 0),       -1)
+        cv2.circle(frame, (cx, cy), cr,     (255, 255, 255),  -1)
+
+    # 4 edge-midpoint squares — resize handles (white fill, black outline)
     ox, oy = mask.ox, mask.oy
     right  = ox + mask.num_white * mask.wkw
     bottom = oy + mask.wkh
     mid_y  = (oy + bottom) // 2
     mid_x  = (ox + right)  // 2
-    ks     = 5  # half-size of each handle square
+    ks     = 5  # half-size of handle square
 
     for hx, hy in [
-        (ox,    oy),      # top-left
-        (mid_x, oy),      # top-centre
-        (right, oy),      # top-right
-        (ox,    mid_y),   # mid-left
-        (right, mid_y),   # mid-right
-        (ox,    bottom),  # bottom-left
-        (mid_x, bottom),  # bottom-centre
-        (right, bottom),  # bottom-right
+        (mid_x, oy),      # top edge
+        (ox,    mid_y),   # left edge
+        (right, mid_y),   # right edge
+        (mid_x, bottom),  # bottom edge
     ]:
         cv2.rectangle(frame, (hx - ks - 1, hy - ks - 1),
-                      (hx + ks + 1, hy + ks + 1), (0, 0, 0), -1)   # dark outline
+                      (hx + ks + 1, hy + ks + 1), (0, 0, 0),         -1)
         cv2.rectangle(frame, (hx - ks,     hy - ks),
-                      (hx + ks,     hy + ks),     (255, 255, 255), -1)  # white fill
+                      (hx + ks,     hy + ks),     (255, 255, 255),    -1)
 
 
 # ---------------------------------------------------------------------------
@@ -359,17 +456,18 @@ class MaskControlPanel:
     """
 
     WIN_NAME = "Mask Controls"
-    PW, PH   = 640, 440
+    PW, PH   = 640, 480
 
     _TABLE = [
         ("Drag interior",     "Move whole keyboard"),
         ("Drag left edge",    "Resize (right stays fixed)"),
         ("Drag right edge",   "Resize (left stays fixed)"),
         ("Drag bottom edge",  "Change key height"),
-        ("Drag corner",       "Resize width + height"),
+        ("Drag corner \u25ef", "Warp perspective"),
         ("Scroll wheel",      "Add / remove a key"),
         ("[ / ]",             "Shift starting note"),
         ("- / =",             "Fine key width"),
+        ("V key",             "Reset warp to rectangle"),
     ]
 
     _MOVE_STEP   = 5
@@ -541,7 +639,9 @@ class MaskControlPanel:
         self._lbl(panel, rx + 8, y + 14, "Move", 0.48, (180, 180, 180))
 
         def _mv(ddx, ddy):
-            m.ox += ddx; m.oy += ddy; m.mark_dirty()
+            m.ox += ddx; m.oy += ddy
+            m.corners += np.array([ddx, ddy], dtype=np.float32)
+            m.mark_dirty()
 
         ux,  uy  = cx - BW // 2, y + 22      # up
         lx,  ly  = cx - BW - 4,  y + 55      # left
@@ -611,6 +711,12 @@ class MaskControlPanel:
         self._btn(panel, rx, y + 4, rw, BH, "SAVE CALIBRATION",
                   self._do_save, color=(20, 90, 30))
 
+        # Reset warp
+        def _reset():
+            m.reset_warp()
+        self._btn(panel, rx, y + 40, rw, BH, "RESET WARP",
+                  _reset, color=(100, 55, 10))
+
 
 # ---------------------------------------------------------------------------
 # HUD
@@ -629,10 +735,11 @@ def _draw_hud(frame: np.ndarray, mask: KeyMask, total_keys: int, show_help: bool
 
     if show_help:
         lines = [
-            "Drag interior/top     move keyboard",
+            "Drag interior         move keyboard",
             "Drag left/right edge  resize key width",
             "Drag bottom edge      resize key height",
-            "Drag any corner ◼     resize width + height",
+            "Drag corner \u25ef         warp perspective",
+            "V                     reset warp to rectangle",
             "Scroll                add / remove key",
             "[ / ]                 shift start note",
             "- / =                 fine key width",
@@ -742,6 +849,10 @@ def run_calibration():
         elif key == ord('='):
             mask.wkw += 1
             mask.mark_dirty()
+
+        elif key in (ord('v'), ord('V')):
+            mask.reset_warp()
+            print("Warp reset to rectangle.")
 
     cap.release()
     cv2.destroyAllWindows()

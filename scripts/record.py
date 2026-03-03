@@ -567,7 +567,7 @@ def run_record():
         hint_y    = display.shape[0] - 18
         st_state   = "ON" if show_stats else "OFF"
         rec_state  = "STOP" if recording else "REC"
-        mask_part  = f"  M:mask({'ON' if show_mask else 'OFF'})  N:ctrl({'ON' if panel.visible else 'OFF'})"
+        mask_part  = f"  M:mask({'ON' if show_mask else 'OFF'})  N:ctrl({'ON' if panel.visible else 'OFF'})  V:reset-warp"
         cv2.putText(display,
                     f"SPACE:{rec_state}  S:stats({st_state})  R:fitz{mask_part}  ESC:quit",
                     (10, hint_y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (120, 120, 120), 1)
@@ -627,6 +627,7 @@ def run_record():
                     frames_csv=frames_csv,
                     midi_jsonl=midi_jsonl,
                     midi_mid=midi_mid,
+                    video_fps=rec_fps,
                 )
                 print(f"Recording STOPPED  ({rec_stop})")
         elif key == ord("s") or key == ord("S"):
@@ -641,6 +642,9 @@ def run_record():
             fitz_label     = ""
             fitz_retesting = True
             print("Fitzpatrick retest triggered — place hand in view")
+        elif key == ord("v") or key == ord("V"):
+            mask.reset_warp()
+            print("Mask warp reset to rectangle.")
 
     # Ensure writer is closed if user exits mid-recording
     if writer is not None:
@@ -666,6 +670,7 @@ def run_record():
                 frames_csv=frames_csv,
                 midi_jsonl=midi_jsonl,
                 midi_mid=midi_mid,
+                video_fps=rec_fps,
             )
 
     stats.print_final_stats(frame.shape[1], frame.shape[0], config.MODEL_COMPLEXITY)
