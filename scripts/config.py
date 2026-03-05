@@ -39,6 +39,10 @@ LUX_BRIGHT_THRESHOLD = 500   # at or above → Bright; between → Indoor
 HAND_SIZE_MIN_CM = 10.0
 HAND_SIZE_MAX_CM = 30.0
 
+# Hand Size Classification Thresholds (cm, based on hand span)
+HAND_SIZE_SMALL_MAX_CM = 18.0   # < this → Small
+HAND_SIZE_LARGE_MIN_CM = 21.0   # ≥ this → Large  (between → Medium)
+
 # Session Overlay Text Colours
 TEXT_COLOR_FITZPATRICK = (100, 200, 255)   # light blue
 TEXT_COLOR_SESSION     = (200, 200, 200)   # light grey

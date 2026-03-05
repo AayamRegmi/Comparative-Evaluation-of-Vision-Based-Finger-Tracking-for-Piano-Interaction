@@ -49,6 +49,14 @@ _RAW_DIR = Path(__file__).parent.parent / "data" / "raw"
 # Recording helpers
 # ---------------------------------------------------------------------------
 
+def _hand_size_label(cm: float) -> str:
+    if cm < config.HAND_SIZE_SMALL_MAX_CM:
+        return "Small"
+    if cm >= config.HAND_SIZE_LARGE_MIN_CM:
+        return "Large"
+    return "Medium"
+
+
 def _next_participant_id() -> int:
     """Return the next available participant number (scans data/raw/p### folders)."""
     _RAW_DIR.mkdir(parents=True, exist_ok=True)
@@ -81,7 +89,7 @@ def _start_recording(frame, pid: int, fps: float) -> tuple:
 
 def _save_session_metadata(out_dir: Path, pid: int, lux_value: float,
                             lux_label: str, hand_size_cm: float,
-                            fitz_type: int, fitz_label: str,
+                            hand_size_label: str, fitz_type: int, fitz_label: str,
                             video_path: Path, rec_start: str, rec_stop: str,
                             midi_port: str = None, frames_csv: Path = None,
                             midi_jsonl: Path = None, midi_mid: Path = None,
@@ -94,6 +102,7 @@ def _save_session_metadata(out_dir: Path, pid: int, lux_value: float,
         "lux_value":       lux_value,
         "lux_label":       lux_label,
         "hand_size_cm":    hand_size_cm,
+        "hand_size_label": hand_size_label,
         "fitzpatrick_type":  fitz_type,
         "fitzpatrick_label": fitz_label,
         "video_file":      video_path.name,
@@ -403,8 +412,9 @@ def run_record():
     _fw = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     _fh = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-    lux_label_str  = lux_to_label(lux_value)
-    pid            = _next_participant_id()
+    lux_label_str    = lux_to_label(lux_value)
+    hand_size_label  = _hand_size_label(hand_size_cm)
+    pid              = _next_participant_id()
     midi_port_name = midi_ports[midi_port_idx] if midi_ports else None
     print(f"Lux: {lux_value:.0f} lux  ->  {lux_label_str}  |  Hand size: {hand_size_cm} cm")
     print(f"Participant ID: p{pid:03d}")
@@ -534,7 +544,7 @@ def run_record():
         cv2.putText(display, f"Lux: {lux_value:.0f}  ({lux_label_str})",
                     (fw - 340, yr), cv2.FONT_HERSHEY_SIMPLEX, 0.65, lux_col, 2)
         yr += 30
-        cv2.putText(display, f"Hand: {hand_size_cm:.1f} cm",
+        cv2.putText(display, f"Hand: {hand_size_cm:.1f} cm  ({hand_size_label})",
                     (fw - 340, yr), cv2.FONT_HERSHEY_SIMPLEX, 0.65, config.TEXT_COLOR_SESSION, 2)
         yr += 30
         fitz_text = (f"Fitz: Type {fitz_type}  {fitz_label}"
@@ -621,7 +631,7 @@ def run_record():
                     writer = None
                 _save_session_metadata(
                     out_dir, pid, lux_value, lux_label_str,
-                    hand_size_cm, fitz_type, fitz_label,
+                    hand_size_cm, hand_size_label, fitz_type, fitz_label,
                     video_path, rec_start, rec_stop,
                     midi_port=midi_port_name,
                     frames_csv=frames_csv,
@@ -664,7 +674,7 @@ def run_record():
         if out_dir and video_path:
             _save_session_metadata(
                 out_dir, pid, lux_value, lux_label_str,
-                hand_size_cm, fitz_type, fitz_label,
+                hand_size_cm, hand_size_label, fitz_type, fitz_label,
                 video_path, rec_start, rec_stop,
                 midi_port=midi_port_name,
                 frames_csv=frames_csv,

@@ -239,11 +239,13 @@ def _analyse_session(session_dir: Path, model_name: str, out_dir: Path,
     fw = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     fh = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-    errors     : list = []
-    per_finger : dict = {i: [] for i in range(5)}
-    accurate   : int  = 0
-    missed     : int  = 0
-    skipped    : int  = 0
+    errors         : list = []
+    per_finger     : dict = {'L': {i: [] for i in range(5)},
+                             'R': {i: [] for i in range(5)}}
+    accurate       : dict = {'L': 0, 'R': 0}
+    detection_fail : dict = {'L': 0, 'R': 0}
+    missed         : int  = 0
+    skipped        : int  = 0
     total      : int  = len(note_events)
     cancelled  : bool = False
 
@@ -265,6 +267,7 @@ def _analyse_session(session_dir: Path, model_name: str, out_dir: Path,
             continue
 
         cx, cy   = key_info["center"]
+        hand     = 'L' if cx < fw / 2 else 'R'
         key_poly = key_info["polygon"]
 
         frame_idx = _nearest_frame_idx(evt["time_s"], frame_times)
@@ -279,7 +282,9 @@ def _analyse_session(session_dir: Path, model_name: str, out_dir: Path,
             missed += 1
             continue
 
-        # Polygon-containment identification (mirrors test.py exactly)
+        # Polygon-containment identification (mirrors test.py exactly).
+        # If no tip is inside the polygon the model failed to place a landmark
+        # on the pressed key — count as detection_fail, exclude from MJMPE.
         inside_tips = [t for t in tips
                        if cv2.pointPolygonTest(
                            key_poly, (float(t[1]), float(t[2])), False
@@ -287,14 +292,13 @@ def _analyse_session(session_dir: Path, model_name: str, out_dir: Path,
 
         if inside_tips:
             best_slot, best_tx, _ty = min(inside_tips, key=lambda t: abs(t[1] - cx))
+            h_err = abs(best_tx - cx)
+            errors.append(h_err)
+            per_finger[hand][best_slot].append(h_err)
+            if h_err < mask.wkw / 2:
+                accurate[hand] += 1
         else:
-            best_slot, best_tx, _ty = min(tips, key=lambda t: abs(t[1] - cx))
-
-        h_err = abs(best_tx - cx)
-        errors.append(h_err)
-        per_finger[best_slot].append(h_err)
-        if h_err < mask.wkw / 2:
-            accurate += 1
+            detection_fail[hand] += 1
 
     print()
     cap.release()
@@ -303,33 +307,66 @@ def _analyse_session(session_dir: Path, model_name: str, out_dir: Path,
     if cancelled:
         return None     # don't write partial results
 
-    half_key = mask.wkw / 2
-    matched  = len(errors)
+    half_key   = mask.wkw / 2
+    matched    = len(errors)
+    total_df   = sum(detection_fail.values())
+    all_events = matched + total_df + missed
 
-    result = {
-        "pid":               pid,
-        "model":             model_name,
-        "fitzpatrick":       metadata.get("fitzpatrick_type"),
-        "lux":               metadata.get("lux"),
-        "hand_size_cm":      metadata.get("hand_size_cm"),
-        "notes_total":       total,
-        "notes_skipped":     skipped,
-        "notes_matched":     matched,
-        "notes_missed":      missed,
-        "half_key_width_px": half_key,
-        "mjmpe_px":          round(float(np.mean(errors)), 3) if errors else None,
-        "accuracy_pct":      round(100.0 * accurate / matched, 2) if matched else None,
-        "per_finger": {
+    def _finger_dict(side: str) -> dict:
+        return {
             str(i): {
                 "name":         _FINGER_NAMES[i],
-                "count":        len(per_finger[i]),
-                "mjmpe":        (round(float(np.mean(per_finger[i])), 3)
-                                 if per_finger[i] else None),
-                "accuracy_pct": (round(100.0 * sum(1 for e in per_finger[i] if e < half_key)
-                                       / len(per_finger[i]), 2)
-                                 if per_finger[i] else None),
+                "count":        len(per_finger[side][i]),
+                "mjmpe":        (round(float(np.mean(per_finger[side][i])), 3)
+                                 if per_finger[side][i] else None),
+                "accuracy_pct": (round(
+                    100.0 * sum(1 for e in per_finger[side][i] if e < half_key)
+                    / len(per_finger[side][i]), 2)
+                                 if per_finger[side][i] else None),
             }
             for i in range(5)
+        }
+
+    result = {
+        "pid":                  pid,
+        "model":                model_name,
+        "fitzpatrick":          metadata.get("fitzpatrick_type"),
+        "lux":                  metadata.get("lux"),
+        "hand_size_cm":         metadata.get("hand_size_cm"),
+        "notes_total":          total,
+        "notes_skipped":        skipped,
+        "notes_matched":        matched,
+        "notes_detection_fail": total_df,
+        "notes_missed":         missed,
+        "half_key_width_px":    half_key,
+        "mjmpe_px":             round(float(np.mean(errors)), 3) if errors else None,
+        "accuracy_pct":         (round(100.0 * sum(accurate.values()) / matched, 2)
+                                 if matched else None),
+        "detection_rate_pct":   (round(100.0 * matched / all_events, 2)
+                                 if all_events else None),
+        "per_hand": {
+            "L": {
+                "matched":        sum(len(per_finger['L'][i]) for i in range(5)),
+                "detection_fail": detection_fail['L'],
+                "mjmpe_px":       (round(float(np.mean(
+                                       [e for i in range(5) for e in per_finger['L'][i]])), 3)
+                                   if any(per_finger['L'][i] for i in range(5)) else None),
+                "accuracy_pct":   (round(100.0 * accurate['L']
+                                         / sum(len(per_finger['L'][i]) for i in range(5)), 2)
+                                   if any(per_finger['L'][i] for i in range(5)) else None),
+                "fingers":        _finger_dict('L'),
+            },
+            "R": {
+                "matched":        sum(len(per_finger['R'][i]) for i in range(5)),
+                "detection_fail": detection_fail['R'],
+                "mjmpe_px":       (round(float(np.mean(
+                                       [e for i in range(5) for e in per_finger['R'][i]])), 3)
+                                   if any(per_finger['R'][i] for i in range(5)) else None),
+                "accuracy_pct":   (round(100.0 * accurate['R']
+                                         / sum(len(per_finger['R'][i]) for i in range(5)), 2)
+                                   if any(per_finger['R'][i] for i in range(5)) else None),
+                "fingers":        _finger_dict('R'),
+            },
         },
     }
 
@@ -340,12 +377,16 @@ def _analyse_session(session_dir: Path, model_name: str, out_dir: Path,
         json.dump(result, fh_out, indent=2)
 
     print(f"  MJMPE: {result['mjmpe_px']} px  |  Acc: {result['accuracy_pct']}%  "
-          f"|  Matched: {matched}/{total}")
-    for i, name in enumerate(_FINGER_NAMES):
-        pf = result["per_finger"][str(i)]
-        if pf["count"]:
-            print(f"    {name:<7}  {pf['mjmpe']:6.2f} px  "
-                  f"{pf['accuracy_pct']:5.1f}%  ({pf['count']} notes)")
+          f"|  DetRate: {result['detection_rate_pct']}%  "
+          f"|  Matched: {matched}  Fail: {total_df}  Missed: {missed}")
+    for side, side_name in [('L', 'Left'), ('R', 'Right')]:
+        ph = result["per_hand"][side]
+        print(f"    {side_name} hand  (matched={ph['matched']}, fail={ph['detection_fail']}):")
+        for i, name in enumerate(_FINGER_NAMES):
+            pf = ph["fingers"][str(i)]
+            if pf["count"]:
+                print(f"      {name:<7}  {pf['mjmpe']:6.2f} px  "
+                      f"{pf['accuracy_pct']:5.1f}%  ({pf['count']} notes)")
     print(f"  → {out_path}\n")
 
     return out_path
