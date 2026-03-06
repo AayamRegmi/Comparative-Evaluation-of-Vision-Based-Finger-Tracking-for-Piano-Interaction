@@ -58,7 +58,8 @@ except ImportError:
 
 _PROJECT_ROOT = str(Path(__file__).parent.parent)
 _CAL_FILE     = Path(_PROJECT_ROOT) / "data" / "calibration" / "key_centers.json"
-_RAW_DIR      = Path(_PROJECT_ROOT) / "data" / "raw"
+_RAW_DIR       = Path(_PROJECT_ROOT) / "data" / "raw"
+_PROCESSED_DIR = Path(_PROJECT_ROOT) / "data" / "processed"
 
 # Fingertip landmark indices — identical for MediaPipe and OpenPose Hand
 _TIPS         = [4, 8, 12, 16, 20]   # Thumb, Index, Middle, Ring, Pinky
@@ -123,8 +124,8 @@ def _scan_sessions(raw_dir: Path) -> list:
         sessions.append({
             "pid":       pid,
             "dir":       d,
-            "mediapipe": (d / f"{pid}_mediapipe_results.json").exists(),
-            "openpose":  (d / f"{pid}_openpose_results.json").exists(),
+            "mediapipe": (_PROCESSED_DIR / f"{pid}_mediapipe_results.json").exists(),
+            "openpose":  (_PROCESSED_DIR / f"{pid}_openpose_results.json").exists(),
         })
     return sessions
 
@@ -295,7 +296,7 @@ def _analyse_session(session_dir: Path, model_name: str, out_dir: Path,
             h_err = abs(best_tx - cx)
             errors.append(h_err)
             per_finger[hand][best_slot].append(h_err)
-            if h_err < mask.wkw / 2:
+            if h_err < mask.wkw * config.ACCURACY_THRESHOLD_RATIO:
                 accurate[hand] += 1
         else:
             detection_fail[hand] += 1
@@ -581,7 +582,7 @@ def run_ui() -> None:
                             "step": _s, "total_work": _tw})
 
                 out = _analyse_session(
-                    sess_dir, model_name, sess_dir,
+                    sess_dir, model_name, _PROCESSED_DIR,
                     progress_cb=_prog, cancel_ev=_cancel_ev,
                 )
                 if out is not None:
@@ -719,7 +720,7 @@ def main():
         parser.error("session_dir is required when not using --ui")
 
     session_dir = Path(args.session_dir)
-    out_dir     = Path(args.out) if args.out else session_dir
+    out_dir     = Path(args.out) if args.out else _PROCESSED_DIR
     models      = (["mediapipe", "openpose"] if args.model == "both"
                    else [args.model])
 

@@ -41,7 +41,11 @@ HAND_SIZE_MAX_CM = 30.0
 
 # Hand Size Classification Thresholds (cm, based on hand span)
 HAND_SIZE_SMALL_MAX_CM = 18.0   # < this → Small
-HAND_SIZE_LARGE_MIN_CM = 21.0   # ≥ this → Large  (between → Medium)
+HAND_SIZE_LARGE_MIN_CM = 21.0   # >= this -> Large  (between -> Medium)
+
+# Accuracy classification threshold (fraction of white key width)
+# 0.25 = quarter-key (~13 px at typical calibration); 0.5 = half-key (old default)
+ACCURACY_THRESHOLD_RATIO = 0.25   # ≥ this → Large  (between → Medium)
 
 # Session Overlay Text Colours
 TEXT_COLOR_FITZPATRICK = (100, 200, 255)   # light blue

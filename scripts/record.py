@@ -18,6 +18,7 @@ import json
 import mediapipe as mp
 import numpy as np
 import os
+import mido
 import time
 from datetime import datetime
 from pathlib import Path
@@ -54,6 +55,18 @@ def _hand_size_label(cm: float) -> str:
         return "Small"
     if cm >= config.HAND_SIZE_LARGE_MIN_CM:
         return "Large"
+    return "Medium"
+
+
+_NOTE_NAMES = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"]
+
+def _midi_note_name(n):
+    return _NOTE_NAMES[n % 12] + str(n // 12 - 1)
+
+
+def _hand_size_label(cm):
+    if cm < config.HAND_SIZE_SMALL_MAX_CM: return "Small"
+    if cm >= config.HAND_SIZE_LARGE_MIN_CM: return "Large"
     return "Medium"
 
 
@@ -102,6 +115,8 @@ def _save_session_metadata(out_dir: Path, pid: int, lux_value: float,
         "lux_value":       lux_value,
         "lux_label":       lux_label,
         "hand_size_cm":    hand_size_cm,
+        "hand_size_label": hand_size_label,
+        "flip_y":          flip_y,
         "hand_size_label": hand_size_label,
         "fitzpatrick_type":  fitz_type,
         "fitzpatrick_label": fitz_label,
@@ -228,11 +243,27 @@ def _run_setup_screen(cap, midi_ports: list, midi_port_idx: int,
     # MIDI port display colours
     MIDI_COLOR_OK   = (80, 220, 80)
     MIDI_COLOR_NONE = (60, 60, 200)
+    flip_y = False
+    _midi_mon  = None
+    _last_note = "---"
 
     while True:
         ret, frame = cap.read()
         if not ret:
             break
+        if flip_y:
+            frame = cv2.flip(frame, -1)
+
+        if midi_ports:
+            if _midi_mon is None:
+                try:
+                    _midi_mon = mido.open_input(midi_ports[midi_port_idx])
+                except Exception:
+                    pass
+            if _midi_mon is not None:
+                for _msg in _midi_mon.iter_pending():
+                    if _msg.type == "note_on" and _msg.velocity > 0:
+                        _last_note = _midi_note_name(_msg.note) + "  (MIDI " + str(_msg.note) + ")"
 
         overlay = frame.copy()
         cv2.rectangle(overlay, (0, 0), (frame.shape[1], frame.shape[0]), (0, 0, 0), -1)
@@ -277,6 +308,8 @@ def _run_setup_screen(cap, midi_ports: list, midi_port_idx: int,
                     cv2.FONT_HERSHEY_SIMPLEX, 0.65, midi_col, 2)
         cv2.putText(frame, cycle_hint, (80, midi_box_y + 58),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (130, 130, 130), 1)
+        cv2.putText(frame, "Last note: " + _last_note, (80, midi_box_y + 80),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 220, 220), 2)
 
         # Camera selector (below MIDI section)
         cam_y = 510
@@ -294,9 +327,12 @@ def _run_setup_screen(cap, midi_ports: list, midi_port_idx: int,
                     cv2.FONT_HERSHEY_SIMPLEX, 0.65, (80, 220, 80), 2)
         cv2.putText(frame, cam_hint2, (80, cam_box_y + 58),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (130, 130, 130), 1)
+        flip_txt = "  f: flip  [" + ("ON" if flip_y else "off") + "]"
+        cv2.putText(frame, flip_txt, (80, cam_box_y + 78),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (80, 220, 80) if flip_y else (130, 130, 130), 1)
 
         cv2.putText(frame,
-                    "TAB: switch field    ENTER: confirm    [/]: MIDI port    c/C: camera    ESC: quit",
+                    "TAB: switch field    ENTER: confirm    [/]: MIDI port    c/C: camera    f: flip    ESC: quit",
                     (80, frame.shape[0] - 60),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.55, (140, 140, 140), 1)
         if error_msg:
@@ -308,13 +344,21 @@ def _run_setup_screen(cap, midi_ports: list, midi_port_idx: int,
         key = cv2.waitKey(30) & 0xFF
 
         if key == config.EXIT_KEY:
-            return None, None, 0, cam_idx, cap
+            if _midi_mon is not None:
+                try:
+                    _midi_mon.close()
+                except Exception:
+                    pass
+                _midi_mon = None
+            return None, None, 0, cam_idx, cap, False
 
         elif key == ord("[") and midi_ports:
             midi_port_idx = (midi_port_idx - 1) % len(midi_ports)
+            _midi_mon = None
 
         elif key == ord("]") and midi_ports:
             midi_port_idx = (midi_port_idx + 1) % len(midi_ports)
+            _midi_mon = None
 
         elif key in (ord("c"), ord("C")) and len(avail_cams) > 1:
             delta   = -1 if key == ord("C") else 1
@@ -347,7 +391,16 @@ def _run_setup_screen(cap, midi_ports: list, midi_port_idx: int,
                              f"{config.HAND_SIZE_MIN_CM}–{config.HAND_SIZE_MAX_CM} cm")
                 continue
 
-            return lux_val, hand_val, midi_port_idx, cam_idx, cap
+        if _midi_mon is not None:
+            try:
+                _midi_mon.close()
+            except Exception:
+                pass
+            _midi_mon = None
+            return lux_val, hand_val, midi_port_idx, cam_idx, cap, flip_y
+
+        elif key in (ord("f"), ord("F")):
+            flip_y = not flip_y
 
         elif key in (8, 127):                   # Backspace
             fields[active]["value"] = fields[active]["value"][:-1]
@@ -359,7 +412,13 @@ def _run_setup_screen(cap, midi_ports: list, midi_port_idx: int,
             fields[active]["value"] += chr(key)
             error_msg = ""
 
-    return None, None, 0, cam_idx, cap
+    if _midi_mon is not None:
+        try:
+            _midi_mon.close()
+        except Exception:
+            pass
+        _midi_mon = None
+    return None, None, 0, cam_idx, cap, False
 
 
 # ---------------------------------------------------------------------------
@@ -398,9 +457,10 @@ def run_record():
 
     # --- Setup screen ---
     print("Waiting for session setup...")
-    lux_value, hand_size_cm, midi_port_idx, cam_idx, cap = _run_setup_screen(
+    lux_value, hand_size_cm, midi_port_idx, cam_idx, cap, flip_y = _run_setup_screen(
         cap, midi_ports, midi_port_idx, avail_cams, cam_idx
     )
+    hand_size_label = _hand_size_label(hand_size_cm) if hand_size_cm else "Unknown"
 
     if lux_value is None:
         cap.release()
@@ -479,6 +539,8 @@ def run_record():
         if not success:
             print("Frame capture failed")
             break
+        if flip_y:
+            frame = cv2.flip(frame, -1)
 
         # Run MediaPipe at full 1080p — no resize for recording quality
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
