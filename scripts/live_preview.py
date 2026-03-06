@@ -189,10 +189,12 @@ def _run_test_setup(cap, midi_ports: list, midi_port_idx: int,
         cv2.putText(frame, flip_txt, (80, cam_box_y + 78),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (80, 220, 80) if flip_y else (130, 130, 130), 1)
 
+        fh_s, fw_s = frame.shape[:2]
+        cv2.rectangle(frame, (0, fh_s - 44), (fw_s, fh_s), (20, 20, 20), -1)
         cv2.putText(frame,
                     "ENTER: start test    [/]: MIDI port    c/C: camera    f: flip    ESC: quit",
-                    (80, frame.shape[0] - 40),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (140, 140, 140), 1)
+                    (80, fh_s - 14),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (200, 200, 200), 1)
 
         cv2.imshow(_WIN_NAME, frame)
         key = cv2.waitKey(30) & 0xFF
@@ -302,11 +304,25 @@ _FINGER_NAMES = ("Thumb", "Index", "Middle", "Ring", "Pinky")
 def _show_results(last_frame: np.ndarray, errors: list, missed: int,
                   per_finger: dict, accurate: dict, detection_fail: dict, wkw: int):
     """Render results panel on last_frame and wait for any key."""
+    from PIL import Image, ImageDraw, ImageFont
+
+    try:
+        fnt_title  = ImageFont.truetype("arial.ttf",   22)
+        fnt_label  = ImageFont.truetype("arial.ttf",   15)
+        fnt_value  = ImageFont.truetype("arialbd.ttf", 16)
+        fnt_finger = ImageFont.truetype("arial.ttf",   14)
+        fnt_small  = ImageFont.truetype("arial.ttf",   13)
+    except OSError:
+        fnt_title = fnt_label = fnt_value = fnt_finger = fnt_small = ImageFont.load_default()
+
+    def _rgb(bgr):
+        return (bgr[2], bgr[1], bgr[0])
+
     display = last_frame.copy()
     fh, fw  = display.shape[:2]
 
-    # Dark centred panel — wider for two-column per-finger layout
-    pw, ph   = 700, 560
+    # Dark centred panel
+    pw, ph   = 700, 570
     px       = max(0, (fw - pw) // 2)
     py       = max(0, (fh - ph) // 2)
     panel    = display[py:py+ph, px:px+pw].copy()
@@ -316,20 +332,30 @@ def _show_results(last_frame: np.ndarray, errors: list, missed: int,
                     display[py:py+ph, px:px+pw])
     display[py:py+ph, px:px+pw] = panel
 
-    # Title
-    cv2.putText(display, "MJMPE TEST RESULTS",
-                (px + 170, py + 46), cv2.FONT_HERSHEY_SIMPLEX, 0.95, (220, 220, 220), 2)
-    cv2.line(display, (px + 20, py + 60), (px + pw - 20, py + 60), (60, 60, 60), 1)
+    # Draw all cv2 lines FIRST (before PIL conversion)
+    lx = px + 20
+    rx = px + 368
+    cv2.line(display, (px + 20, py + 52),  (px + pw - 20, py + 52),  (60, 60, 60), 1)   # title divider
+    cv2.line(display, (px + 20, py + 278), (px + pw - 20, py + 278), (55, 55, 55), 1)   # section divider
+    cv2.line(display, (px + 348, py + 282), (px + 348, py + ph - 28), (55, 55, 55), 1)  # column divider
+
+    # Convert to PIL once for all text rendering
+    pil_img = Image.fromarray(cv2.cvtColor(display, cv2.COLOR_BGR2RGB))
+    draw    = ImageDraw.Draw(pil_img)
+
+    # Title — centred
+    title = "MJMPE TEST RESULTS"
+    bbox  = draw.textbbox((0, 0), title, font=fnt_title)
+    tw    = bbox[2] - bbox[0]
+    draw.text((px + (pw - tw) // 2, py + 14), title, font=fnt_title, fill=(220, 220, 220))
 
     def row(label, value, y, val_color=(200, 200, 200)):
-        cv2.putText(display, label, (px + 30, py + y),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.60, (150, 150, 150), 1)
-        cv2.putText(display, value, (px + 350, py + y),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.60, val_color, 2)
+        draw.text((px + 30,  py + y), label, font=fnt_label, fill=(150, 150, 150))
+        draw.text((px + 350, py + y), value, font=fnt_value, fill=_rgb(val_color))
 
     if errors:
         mjmpe    = np.mean(errors)
-        min_e    = np.min(errors)
+        median   = np.median(errors)
         max_e    = np.max(errors)
         matched  = len(errors)
         total_df = sum(detection_fail.values())
@@ -345,64 +371,52 @@ def _show_results(last_frame: np.ndarray, errors: list, missed: int,
         dr_col    = ((0, 200, 80) if det_rate >= 90 else
                      (0, 220, 220) if det_rate >= 70 else (60, 80, 255))
 
-        row("MJMPE  (horizontal)",               f"{mjmpe:.1f} px",        80, mjmpe_col)
-        row(f"Accuracy  (<{half_key:.0f} px)",   f"{pct:.1f} %",          112, acc_col)
-        row("Detection rate",                    f"{det_rate:.1f} %",      144, dr_col)
-        row("Notes matched",                     str(matched),             176)
-        row("Detection fails  (no tip on key)",  str(total_df),            208, (200, 0, 200))
-        row("Notes missed  (no hands)",          str(missed),              240)
-        row("Min / Max error",  f"{min_e:.1f} px  /  {max_e:.1f} px",     272)
+        row("MJMPE  (horizontal)",               f"{mjmpe:.1f} px  (med {median:.1f})",  62,  mjmpe_col)
+        row(f"Accuracy  (<{half_key:.0f} px)",   f"{pct:.1f} %",                          94,  acc_col)
+        row("Detection rate",                    f"{det_rate:.1f} %",                     126, dr_col)
+        row("Notes matched",                     str(matched),                            158)
+        row("Detection fails  (no tip on key)",  str(total_df),                           190, (200, 0, 200))
+        row("Notes missed  (no hands)",          str(missed),                             222)
+        row("Max error",                         f"{max_e:.1f} px",                       254)
 
-        # Divider + two-column per-finger section
-        cv2.line(display, (px + 20, py + 292), (px + pw - 20, py + 292), (55, 55, 55), 1)
-        cv2.putText(display, "Per-finger breakdown (L = left half of frame, R = right):",
-                    (px + 30, py + 312), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (160, 160, 160), 1)
+        draw.text((px + 30, py + 284),
+                  "Per-finger breakdown (L = lower keyboard half, R = upper keyboard half):",
+                  font=fnt_small, fill=(160, 160, 160))
 
-        # Column divider
-        cv2.line(display, (px + 348, py + 298), (px + 348, py + ph - 30),
-                 (55, 55, 55), 1)
-
-        # Column headers
-        lx = px + 20
-        rx = px + 368
-        cv2.putText(display, "Left Hand",
-                    (lx + 90, py + 332), cv2.FONT_HERSHEY_SIMPLEX, 0.52,
-                    (140, 170, 220), 1)
-        cv2.putText(display, "Right Hand",
-                    (rx + 78, py + 332), cv2.FONT_HERSHEY_SIMPLEX, 0.52,
-                    (220, 170, 140), 1)
+        draw.text((lx + 90, py + 302), "Left Hand",  font=fnt_finger, fill=(140, 170, 220))
+        draw.text((rx + 78, py + 302), "Right Hand", font=fnt_finger, fill=(220, 170, 140))
 
         for i, name in enumerate(_FINGER_NAMES):
-            y_off = 356 + i * 34
-            for side, col_x in [('L', lx), ('R', rx)]:
+            y_off = 325 + i * 36
+            for side, col_x in [("L", lx), ("R", rx)]:
                 errs = per_finger[side].get(i, [])
-                cv2.putText(display, f"{name:<7}", (col_x, py + y_off),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.49, (150, 150, 150), 1)
+                draw.text((col_x, py + y_off), f"{name:<7}",
+                          font=fnt_finger, fill=(150, 150, 150))
                 if errs:
                     f_mjmpe = np.mean(errs)
                     f_acc   = 100.0 * sum(1 for e in errs if e < half_key) / len(errs)
                     f_col   = ((0, 200, 80) if f_mjmpe < 20 else
                                (0, 220, 220) if f_mjmpe < 40 else (60, 80, 255))
-                    cv2.putText(display,
-                                f"{f_mjmpe:5.1f}px {f_acc:4.1f}% ({len(errs)})",
-                                (col_x + 72, py + y_off),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.46, f_col, 1)
+                    flag    = " !" if len(errs) < 5 else ""
+                    draw.text((col_x + 72, py + y_off),
+                              f"{f_mjmpe:5.1f}px {f_acc:4.1f}% ({len(errs)}{flag})",
+                              font=fnt_finger, fill=_rgb(f_col))
                 else:
-                    cv2.putText(display, "--",
-                                (col_x + 72, py + y_off),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.46, (80, 80, 80), 1)
+                    draw.text((col_x + 72, py + y_off), "--",
+                              font=fnt_finger, fill=(80, 80, 80))
     else:
-        cv2.putText(display, "No notes detected",
-                    (px + 170, py + 220),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.75, (60, 80, 255), 2)
-        cv2.putText(display, "Check MIDI connection and retry",
-                    (px + 150, py + 260),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (130, 130, 130), 1)
+        draw.text((px + 160, py + 210), "No notes detected",
+                  font=fnt_value, fill=(60, 80, 255))
+        draw.text((px + 140, py + 248), "Check MIDI connection and retry",
+                  font=fnt_label, fill=(130, 130, 130))
 
-    cv2.putText(display, "Press any key to close",
-                (px + 220, py + ph - 18),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.55, (100, 100, 100), 1)
+    footer = "Press any key to close"
+    fb     = draw.textbbox((0, 0), footer, font=fnt_small)
+    fw_    = fb[2] - fb[0]
+    draw.text((px + (pw - fw_) // 2, py + ph - 24), footer,
+              font=fnt_small, fill=(100, 100, 100))
 
+    display = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
     cv2.imshow(_WIN_NAME, display)
     cv2.waitKey(0)
 
@@ -485,6 +499,10 @@ def run_test():
 
     stats = StatsCollector(config.WARMUP_FRAMES, config.STAT_FRAMES)
 
+    # Keyboard midpoint for L/R hand split (keyboard may not be centred in frame)
+    _key_xs = [k['center'][0] for k in mask.keys] if mask.keys else [_fw / 2]
+    kb_mid  = (min(_key_xs) + max(_key_xs)) / 2
+
     # MJMPE accumulators
     errors         : list = []           # per-note horizontal errors (px) — x-axis only
     per_finger     : dict = {'L': {i: [] for i in range(5)},
@@ -537,7 +555,7 @@ def run_test():
                         continue
 
                     cx, cy = center
-                    hand   = 'L' if cx < fw / 2 else 'R'
+                    hand   = 'L' if cx < kb_mid else 'R'
                     # Identify playing finger: prefer fingertip inside key polygon.
                     # If no fingertip is over the key body the model has failed to
                     # place a landmark on the pressed key — count as detection_fail,
@@ -661,14 +679,16 @@ def run_test():
         cv2.putText(display, f"Notes: {matched} ok / {total_df} fail / {missed} missed",
                     (xr, yr), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (180, 180, 180), 1)
 
-        # Hint bar
-        hint_y   = display.shape[0] - 18
+        # Hint bar — dark strip so text is always readable
+        fh_d, fw_d = display.shape[:2]
+        cv2.rectangle(display, (0, fh_d - 30), (fw_d, fh_d), (20, 20, 20), -1)
+        hint_y   = fh_d - 9
         mask_lbl = f"M:mask({'ON' if show_mask else 'OFF'})"
         ctrl_lbl = f"N:ctrl({'ON' if panel.visible else 'OFF'})"
         st_lbl   = f"S:stats({'ON' if show_stats else 'OFF'})"
         cv2.putText(display,
                     f"{mask_lbl}  {ctrl_lbl}  {st_lbl}  V:reset-warp  ESC:results+quit",
-                    (10, hint_y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (120, 120, 120), 1)
+                    (10, hint_y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (200, 200, 200), 1)
 
         cv2.imshow(_WIN_NAME, display)
         panel.render()
@@ -695,14 +715,14 @@ def run_test():
 
     print(f"\n--- MJMPE Results (horizontal error) ---")
     if errors:
-        half_key = mask.wkw / 2
+        half_key = mask.wkw * config.ACCURACY_THRESHOLD_RATIO
         matched  = len(errors)
         total_df = sum(detection_fail.values())
         all_ev   = matched + total_df + missed
         pct      = 100.0 * sum(accurate.values()) / matched
         det_rate = 100.0 * matched / all_ev if all_ev else 0.0
         print(f"  MJMPE (x):        {np.mean(errors):.2f} px")
-        print(f"  Accuracy:         {pct:.1f} %  (error < {half_key:.0f} px = ½ key width)")
+        print(f"  Accuracy:         {pct:.1f} %  (error < {half_key:.0f} px = {config.ACCURACY_THRESHOLD_RATIO*100:.0f}% key width)")
         print(f"  Detection rate:   {det_rate:.1f} %  (landmark on key / all events)")
         print(f"  Notes matched:    {matched}")
         print(f"  Detection fails:  {total_df}  (hands visible, no tip on key)")

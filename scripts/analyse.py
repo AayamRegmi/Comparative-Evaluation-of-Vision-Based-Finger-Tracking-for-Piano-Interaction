@@ -240,6 +240,10 @@ def _analyse_session(session_dir: Path, model_name: str, out_dir: Path,
     fw = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     fh = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
+    # Keyboard midpoint for L/R hand split (keyboard may not be centred in frame)
+    _key_xs = [k['center'][0] for k in mask.keys] if mask.keys else [fw / 2]
+    kb_mid  = (min(_key_xs) + max(_key_xs)) / 2
+
     errors         : list = []
     per_finger     : dict = {'L': {i: [] for i in range(5)},
                              'R': {i: [] for i in range(5)}}
@@ -268,7 +272,7 @@ def _analyse_session(session_dir: Path, model_name: str, out_dir: Path,
             continue
 
         cx, cy   = key_info["center"]
-        hand     = 'L' if cx < fw / 2 else 'R'
+        hand     = 'L' if cx < kb_mid else 'R'
         key_poly = key_info["polygon"]
 
         frame_idx = _nearest_frame_idx(evt["time_s"], frame_times)
@@ -308,7 +312,7 @@ def _analyse_session(session_dir: Path, model_name: str, out_dir: Path,
     if cancelled:
         return None     # don't write partial results
 
-    half_key   = mask.wkw / 2
+    half_key   = mask.wkw * config.ACCURACY_THRESHOLD_RATIO
     matched    = len(errors)
     total_df   = sum(detection_fail.values())
     all_events = matched + total_df + missed
@@ -320,10 +324,13 @@ def _analyse_session(session_dir: Path, model_name: str, out_dir: Path,
                 "count":        len(per_finger[side][i]),
                 "mjmpe":        (round(float(np.mean(per_finger[side][i])), 3)
                                  if per_finger[side][i] else None),
+                "median_px":    (round(float(np.median(per_finger[side][i])), 3)
+                                 if per_finger[side][i] else None),
                 "accuracy_pct": (round(
                     100.0 * sum(1 for e in per_finger[side][i] if e < half_key)
                     / len(per_finger[side][i]), 2)
                                  if per_finger[side][i] else None),
+                "low_sample":   len(per_finger[side][i]) < 5,
             }
             for i in range(5)
         }
@@ -332,14 +339,14 @@ def _analyse_session(session_dir: Path, model_name: str, out_dir: Path,
         "pid":                  pid,
         "model":                model_name,
         "fitzpatrick":          metadata.get("fitzpatrick_type"),
-        "lux":                  metadata.get("lux"),
+        "lux":                  metadata.get("lux_value"),
         "hand_size_cm":         metadata.get("hand_size_cm"),
         "notes_total":          total,
         "notes_skipped":        skipped,
         "notes_matched":        matched,
         "notes_detection_fail": total_df,
         "notes_missed":         missed,
-        "half_key_width_px":    half_key,
+        "accuracy_threshold_px": half_key,
         "mjmpe_px":             round(float(np.mean(errors)), 3) if errors else None,
         "accuracy_pct":         (round(100.0 * sum(accurate.values()) / matched, 2)
                                  if matched else None),

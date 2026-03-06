@@ -673,8 +673,8 @@ class MaskControlPanel:
         # Keys +/-
         _section(
             f"Keys: {m.num_white}",
-            lambda: (setattr(m, 'num_white', max(4,  m.num_white - 1)), m.mark_dirty()),
-            lambda: (setattr(m, 'num_white', min(52, m.num_white + 1)), m.mark_dirty()),
+            lambda: (setattr(m, 'num_white', max(4,  m.num_white - 1)), m.reset_warp()),
+            lambda: (setattr(m, 'num_white', min(52, m.num_white + 1)), m.reset_warp()),
         )
 
         # Start note
@@ -696,15 +696,15 @@ class MaskControlPanel:
         # Key width
         _section(
             f"Width: {m.wkw} px",
-            lambda: (setattr(m, 'wkw', max(6, m.wkw - ws)), m.mark_dirty()),
-            lambda: (setattr(m, 'wkw', m.wkw + ws),         m.mark_dirty()),
+            lambda: (setattr(m, 'wkw', max(6, m.wkw - ws)), m.reset_warp()),
+            lambda: (setattr(m, 'wkw', m.wkw + ws),         m.reset_warp()),
         )
 
         # Key height
         _section(
             f"Height: {m.wkh} px",
-            lambda: (setattr(m, 'wkh', max(20, m.wkh - hs)), m.mark_dirty()),
-            lambda: (setattr(m, 'wkh', m.wkh + hs),          m.mark_dirty()),
+            lambda: (setattr(m, 'wkh', max(20, m.wkh - hs)), m.reset_warp()),
+            lambda: (setattr(m, 'wkh', m.wkh + hs),          m.reset_warp()),
         )
 
         # Save calibration
@@ -844,11 +844,11 @@ def run_calibration():
 
         elif key == ord('-'):
             mask.wkw = max(6, mask.wkw - 1)
-            mask.mark_dirty()
+            mask.reset_warp()
 
         elif key == ord('='):
             mask.wkw += 1
-            mask.mark_dirty()
+            mask.reset_warp()
 
         elif key in (ord('v'), ord('V')):
             mask.reset_warp()

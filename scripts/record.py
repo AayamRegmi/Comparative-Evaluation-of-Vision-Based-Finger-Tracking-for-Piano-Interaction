@@ -26,7 +26,7 @@ from pathlib import Path
 try:
     from . import config
     from .camera_setup import init_camera
-    from .fitzpatrick_detector import detect_skin_type
+    from .fitzpatrick_detector import detect_skin_type, ita_to_fitzpatrick
     from .lux_calculator import lux_to_label
     from .stats_collector import StatsCollector
     from .midi_recorder import MidiRecorder, FrameLogger, list_midi_input_ports
@@ -36,7 +36,7 @@ except ImportError:
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import config
     from camera_setup import init_camera
-    from fitzpatrick_detector import detect_skin_type
+    from fitzpatrick_detector import detect_skin_type, ita_to_fitzpatrick
     from lux_calculator import lux_to_label
     from stats_collector import StatsCollector
     from midi_recorder import MidiRecorder, FrameLogger, list_midi_input_ports
@@ -49,6 +49,16 @@ _RAW_DIR = Path(__file__).parent.parent / "data" / "raw"
 # ---------------------------------------------------------------------------
 # Recording helpers
 # ---------------------------------------------------------------------------
+
+_FITZ_TYPE_LABELS = {
+    1: "I - Very Light",
+    2: "II - Light",
+    3: "III - Med Light",
+    4: "IV - Med Dark",
+    5: "V - Dark",
+    6: "VI - Very Dark",
+}
+
 
 def _hand_size_label(cm: float) -> str:
     if cm < config.HAND_SIZE_SMALL_MAX_CM:
@@ -106,7 +116,9 @@ def _save_session_metadata(out_dir: Path, pid: int, lux_value: float,
                             video_path: Path, rec_start: str, rec_stop: str,
                             midi_port: str = None, frames_csv: Path = None,
                             midi_jsonl: Path = None, midi_mid: Path = None,
-                            video_fps: float = None):
+                            video_fps: float = None,
+                            fitzpatrick_source: str = "auto",
+                            fitzpatrick_ita: float = None):
     """Write session metadata to <pid>_session.json."""
     meta = {
         "participant_id": f"p{pid:03d}",
@@ -118,8 +130,10 @@ def _save_session_metadata(out_dir: Path, pid: int, lux_value: float,
         "hand_size_label": hand_size_label,
         "flip_y":          flip_y,
         "hand_size_label": hand_size_label,
-        "fitzpatrick_type":  fitz_type,
-        "fitzpatrick_label": fitz_label,
+        "fitzpatrick_type":   fitz_type,
+        "fitzpatrick_label":  fitz_label,
+        "fitzpatrick_source": fitzpatrick_source,
+        "fitzpatrick_ita":    round(fitzpatrick_ita, 2) if fitzpatrick_ita is not None else None,
         "video_file":      video_path.name,
         "video_fps":       round(video_fps, 2) if video_fps else None,
         "frames_csv":      frames_csv.name  if frames_csv  else None,
@@ -228,8 +242,9 @@ def _run_setup_screen(cap, midi_ports: list, midi_port_idx: int,
     if avail_cams is None:
         avail_cams = [cam_idx]
     fields = [
-        {"label": "Lux Level", "unit": "lux", "value": ""},
-        {"label": "Hand Size", "unit": "cm",  "value": ""},
+        {"label": "Lux Level",        "unit": "lux",   "value": ""},
+        {"label": "Hand Size",        "unit": "cm",    "value": ""},
+        {"label": "Fitzpatrick Type", "unit": "(1-6)", "value": ""},  # optional
     ]
     active    = 0
     error_msg = ""
@@ -289,6 +304,29 @@ def _run_setup_screen(cap, midi_ports: list, midi_port_idx: int,
         _draw_input_box(frame, fields[1]["label"], fields[1]["value"],
                         fields[1]["unit"], 280, active == 1)
 
+        # Fitzpatrick type -- optional right-column field
+        fitz_rx = 620
+        fitz_col = (0, 200, 255) if active == 2 else (130, 130, 130)
+        cv2.putText(frame, "Fitzpatrick Type  (optional, 1-6 or blank = auto)", (fitz_rx, 160),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (200, 200, 200), 1)
+        fitz_bx = 168
+        cv2.rectangle(frame, (fitz_rx, fitz_bx), (fitz_rx + 360, fitz_bx + 40), (40, 40, 40), -1)
+        cv2.rectangle(frame, (fitz_rx, fitz_bx), (fitz_rx + 360, fitz_bx + 40), fitz_col, 2)
+        fitz_cursor = "|" if active == 2 else ""
+        cv2.putText(frame, f"{fields[2]['value']}{fitz_cursor}  {fields[2]['unit']}",
+                    (fitz_rx + 8, fitz_bx + 28), cv2.FONT_HERSHEY_SIMPLEX, 0.8, fitz_col, 2)
+        fitz_val_str = fields[2]["value"]
+        if fitz_val_str and fitz_val_str.isdigit() and 1 <= int(fitz_val_str) <= 6:
+            fitz_preview = _FITZ_TYPE_LABELS[int(fitz_val_str)]
+            cv2.putText(frame, f"  -> {fitz_preview}", (fitz_rx, fitz_bx + 62),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 200, 100), 2)
+        elif fitz_val_str:
+            cv2.putText(frame, "  -> invalid (enter 1-6)", (fitz_rx, fitz_bx + 62),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.65, (60, 80, 255), 2)
+        else:
+            cv2.putText(frame, "  -> auto-detect (20-frame average)", (fitz_rx, fitz_bx + 62),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, (120, 120, 120), 1)
+
         # MIDI port display (below hand-size box, not a text-entry field)
         midi_y = 410
         cv2.putText(frame, "MIDI Input Port", (80, midi_y),
@@ -331,12 +369,14 @@ def _run_setup_screen(cap, midi_ports: list, midi_port_idx: int,
         cv2.putText(frame, flip_txt, (80, cam_box_y + 78),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (80, 220, 80) if flip_y else (130, 130, 130), 1)
 
+        fh_s, fw_s = frame.shape[:2]
+        cv2.rectangle(frame, (0, fh_s - 70), (fw_s, fh_s), (20, 20, 20), -1)
         cv2.putText(frame,
                     "TAB: switch field    ENTER: confirm    [/]: MIDI port    c/C: camera    f: flip    ESC: quit",
-                    (80, frame.shape[0] - 60),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (140, 140, 140), 1)
+                    (80, fh_s - 44),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (200, 200, 200), 1)
         if error_msg:
-            cv2.putText(frame, error_msg, (80, frame.shape[0] - 28),
+            cv2.putText(frame, error_msg, (80, fh_s - 12),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (60, 80, 255), 2)
 
         cv2.imshow(_WIN_NAME, frame)
@@ -350,7 +390,7 @@ def _run_setup_screen(cap, midi_ports: list, midi_port_idx: int,
                 except Exception:
                     pass
                 _midi_mon = None
-            return None, None, 0, cam_idx, cap, False
+            return None, None, 0, cam_idx, cap, False, 0
 
         elif key == ord("[") and midi_ports:
             midi_port_idx = (midi_port_idx - 1) % len(midi_ports)
@@ -372,7 +412,7 @@ def _run_setup_screen(cap, midi_ports: list, midi_port_idx: int,
                 new_cap.release()
 
         elif key == 9:                          # Tab
-            active = (active + 1) % len(fields)
+            active = (active + 1) % len(fields)  # 3 fields: lux, hand, fitzpatrick
             error_msg = ""
 
         elif key in (13, 10):                   # Enter
@@ -391,13 +431,22 @@ def _run_setup_screen(cap, midi_ports: list, midi_port_idx: int,
                              f"{config.HAND_SIZE_MIN_CM}–{config.HAND_SIZE_MAX_CM} cm")
                 continue
 
-        if _midi_mon is not None:
-            try:
-                _midi_mon.close()
-            except Exception:
-                pass
-            _midi_mon = None
-            return lux_val, hand_val, midi_port_idx, cam_idx, cap, flip_y
+            fitz_raw = fields[2]["value"].strip()
+            if fitz_raw:
+                if not (fitz_raw.isdigit() and 1 <= int(fitz_raw) <= 6):
+                    error_msg = "Fitzpatrick type must be blank or a number 1-6"
+                    continue
+                manual_fitz = int(fitz_raw)
+            else:
+                manual_fitz = 0  # auto-detect
+
+            if _midi_mon is not None:
+                try:
+                    _midi_mon.close()
+                except Exception:
+                    pass
+                _midi_mon = None
+            return lux_val, hand_val, midi_port_idx, cam_idx, cap, flip_y, manual_fitz
 
         elif key in (ord("f"), ord("F")):
             flip_y = not flip_y
@@ -407,10 +456,16 @@ def _run_setup_screen(cap, midi_ports: list, midi_port_idx: int,
             error_msg = ""
 
         elif 0 <= key <= 127 and chr(key) in "0123456789.":
-            if key == ord(".") and "." in fields[active]["value"]:
-                continue
-            fields[active]["value"] += chr(key)
-            error_msg = ""
+            if active == 2:
+                # Fitzpatrick field: only single digit 1-6
+                if chr(key) in "123456" and len(fields[2]["value"]) == 0:
+                    fields[2]["value"] = chr(key)
+                    error_msg = ""
+            else:
+                if key == ord(".") and "." in fields[active]["value"]:
+                    continue
+                fields[active]["value"] += chr(key)
+                error_msg = ""
 
     if _midi_mon is not None:
         try:
@@ -418,7 +473,7 @@ def _run_setup_screen(cap, midi_ports: list, midi_port_idx: int,
         except Exception:
             pass
         _midi_mon = None
-    return None, None, 0, cam_idx, cap, False
+    return None, None, 0, cam_idx, cap, False, 0
 
 
 # ---------------------------------------------------------------------------
@@ -457,7 +512,7 @@ def run_record():
 
     # --- Setup screen ---
     print("Waiting for session setup...")
-    lux_value, hand_size_cm, midi_port_idx, cam_idx, cap, flip_y = _run_setup_screen(
+    lux_value, hand_size_cm, midi_port_idx, cam_idx, cap, flip_y, manual_fitz = _run_setup_screen(
         cap, midi_ports, midi_port_idx, avail_cams, cam_idx
     )
     hand_size_label = _hand_size_label(hand_size_cm) if hand_size_cm else "Unknown"
@@ -482,10 +537,24 @@ def run_record():
     print("SPACE: rec/stop   S: stats   R: retest fitz   ESC: quit\n")
 
     # --- Session state ---
-    fitz_detected   = False
-    fitz_type       = 0
-    fitz_label      = ""
-    fitz_retesting  = False
+    _FITZ_SAMPLES   = 20   # frames to average before committing
+    if manual_fitz:
+        fitz_detected  = True
+        fitz_type      = manual_fitz
+        fitz_label     = _FITZ_TYPE_LABELS.get(manual_fitz, "Unknown")
+        fitz_avg_ita   = 0.0
+        fitz_source    = "manual"
+        fitz_retesting = False
+        fitz_ita_buf   = []
+        print(f"Fitzpatrick: Type {fitz_type} ({fitz_label}) [manually set]")
+    else:
+        fitz_detected  = False
+        fitz_type      = 0
+        fitz_label     = ""
+        fitz_avg_ita   = 0.0
+        fitz_source    = "auto"
+        fitz_retesting = False
+        fitz_ita_buf   = []
 
     recording   = False
     show_stats  = False
@@ -551,18 +620,23 @@ def run_record():
         t1      = time.perf_counter()
         inference_ms = (t1 - t0) * 1000
 
-        # --- One-shot Fitzpatrick detection (also re-runs after R pressed) ---
+        # --- Fitzpatrick detection: average over _FITZ_SAMPLES frames for stability ---
         if not fitz_detected and results.multi_hand_landmarks:
-            fitz_type, fitz_label = detect_skin_type(
+            _, _, ita_sample = detect_skin_type(
                 frame,
                 results.multi_hand_landmarks[0],
                 frame.shape[1],
                 frame.shape[0],
             )
-            if fitz_type > 0:
-                fitz_detected  = True
-                fitz_retesting = False
-                print(f"Fitzpatrick: Type {fitz_type} ({fitz_label})")
+            if ita_sample is not None:
+                fitz_ita_buf.append(ita_sample)
+                if len(fitz_ita_buf) >= _FITZ_SAMPLES:
+                    fitz_avg_ita   = float(np.mean(fitz_ita_buf))
+                    fitz_type, fitz_label = ita_to_fitzpatrick(fitz_avg_ita)
+                    fitz_detected  = True
+                    fitz_retesting = False
+                    fitz_ita_buf   = []
+                    print(f"Fitzpatrick: Type {fitz_type} ({fitz_label})  ITA={fitz_avg_ita:.1f}deg  (avg over {_FITZ_SAMPLES} frames)")
 
         total_latency_ms = (time.perf_counter() - loop_start) * 1000
         stats.update(loop_start, inference_ms, total_latency_ms)
@@ -609,8 +683,13 @@ def run_record():
         cv2.putText(display, f"Hand: {hand_size_cm:.1f} cm  ({hand_size_label})",
                     (fw - 340, yr), cv2.FONT_HERSHEY_SIMPLEX, 0.65, config.TEXT_COLOR_SESSION, 2)
         yr += 30
-        fitz_text = (f"Fitz: Type {fitz_type}  {fitz_label}"
-                     if fitz_detected else "Fitz: show hand to detect...")
+        if fitz_detected:
+            tag = " (manual)" if fitz_source == "manual" else f"  (ITA {fitz_avg_ita:.0f})"
+            fitz_text = f"Fitz: Type {fitz_type}  {fitz_label}{tag}"
+        elif fitz_ita_buf:
+            fitz_text = f"Fitz: sampling... ({len(fitz_ita_buf)}/{_FITZ_SAMPLES})"
+        else:
+            fitz_text = "Fitz: show hand to detect..."
         cv2.putText(display, fitz_text,
                     (fw - 340, yr), cv2.FONT_HERSHEY_SIMPLEX, 0.65, config.TEXT_COLOR_FITZPATRICK, 2)
 
@@ -635,14 +714,16 @@ def run_record():
                         (bx + 20, by + 68), cv2.FONT_HERSHEY_SIMPLEX,
                         0.7, (200, 200, 200), 1)
 
-        # Key hint bar (bottom)
-        hint_y    = display.shape[0] - 18
+        # Key hint bar (bottom) — dark strip so text is always readable
+        fh_d, fw_d = display.shape[:2]
+        cv2.rectangle(display, (0, fh_d - 30), (fw_d, fh_d), (20, 20, 20), -1)
+        hint_y    = fh_d - 9
         st_state   = "ON" if show_stats else "OFF"
         rec_state  = "STOP" if recording else "REC"
         mask_part  = f"  M:mask({'ON' if show_mask else 'OFF'})  N:ctrl({'ON' if panel.visible else 'OFF'})  V:reset-warp"
         cv2.putText(display,
                     f"SPACE:{rec_state}  S:stats({st_state})  R:fitz{mask_part}  ESC:quit",
-                    (10, hint_y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (120, 120, 120), 1)
+                    (10, hint_y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (200, 200, 200), 1)
 
         cv2.imshow(_WIN_NAME, display)
         panel.render()
@@ -697,6 +778,8 @@ def run_record():
                     video_path, rec_start, rec_stop,
                     midi_port=midi_port_name,
                     frames_csv=frames_csv,
+                    fitzpatrick_source=fitz_source,
+                    fitzpatrick_ita=(fitz_avg_ita if fitz_source == "auto" else None),
                     midi_jsonl=midi_jsonl,
                     midi_mid=midi_mid,
                     video_fps=rec_fps,
@@ -712,6 +795,9 @@ def run_record():
             fitz_detected  = False
             fitz_type      = 0
             fitz_label     = ""
+            fitz_ita_buf   = []
+            fitz_avg_ita   = 0.0
+            fitz_source    = "auto"   # clear manual; switch to auto-detect
             fitz_retesting = True
             print("Fitzpatrick retest triggered — place hand in view")
         elif key == ord("v") or key == ord("V"):
@@ -740,6 +826,8 @@ def run_record():
                 video_path, rec_start, rec_stop,
                 midi_port=midi_port_name,
                 frames_csv=frames_csv,
+                fitzpatrick_source=fitz_source,
+                fitzpatrick_ita=(fitz_avg_ita if fitz_source == "auto" else None),
                 midi_jsonl=midi_jsonl,
                 midi_mid=midi_mid,
                 video_fps=rec_fps,

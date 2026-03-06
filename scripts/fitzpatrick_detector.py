@@ -11,22 +11,27 @@ import numpy as np
 
 # (min ITA angle, Fitzpatrick type int, display label) — ordered highest to lowest
 _ITA_THRESHOLDS = [
-    (55,  1, "I   – Very Light"),
-    (41,  2, "II  – Light"),
-    (28,  3, "III – Medium Light"),
-    (10,  4, "IV  – Medium Dark"),
-    (-30, 5, "V   – Dark"),
+    (55,  1, "I - Very Light"),
+    (41,  2, "II - Light"),
+    (28,  3, "III - Med Light"),
+    (10,  4, "IV - Med Dark"),
+    (-30, 5, "V - Dark"),
 ]
 
 # MediaPipe palm landmark indices (wrist + MCP joints of all fingers)
 _PALM_IDS = [0, 1, 5, 9, 13, 17]
 
 
+def ita_to_fitzpatrick(ita_angle: float):
+    """Classify a pre-computed ITA angle.  Public wrapper used by record.py."""
+    return _ita_to_fitzpatrick(ita_angle)
+
+
 def _ita_to_fitzpatrick(ita_angle: float):
     for threshold, ftype, label in _ITA_THRESHOLDS:
         if ita_angle > threshold:
             return ftype, label
-    return 6, "VI  – Very Dark"
+    return 6, "VI - Very Dark"
 
 
 def detect_skin_type(frame_bgr: np.ndarray, hand_landmarks, image_w: int, image_h: int):
@@ -66,7 +71,7 @@ def detect_skin_type(frame_bgr: np.ndarray, hand_landmarks, image_w: int, image_
     lab_pixels = lab[mask == 255]
 
     if len(lab_pixels) < 30:
-        return 0, "Unknown"
+        return 0, "Unknown", None
 
     # OpenCV Lab encoding: L in [0,255], b in [0,255] (128 = neutral)
     # Convert to CIE L* (0–100) and b* (−128 to +127)
@@ -74,7 +79,8 @@ def detect_skin_type(frame_bgr: np.ndarray, hand_landmarks, image_w: int, image_
     b_star = float(np.mean(lab_pixels[:, 2])) - 128.0
 
     if b_star == 0.0:
-        return 0, "Unknown"
+        return 0, "Unknown", None
 
     ita = np.degrees(np.arctan((L_star - 50.0) / b_star))
-    return _ita_to_fitzpatrick(ita)
+    ftype, label = _ita_to_fitzpatrick(ita)
+    return ftype, label, ita
