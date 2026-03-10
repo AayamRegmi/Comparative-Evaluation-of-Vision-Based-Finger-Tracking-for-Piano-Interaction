@@ -260,30 +260,58 @@ def _key_center(mask: KeyMask, midi_note: int):
     return None
 
 
-def _get_fingertips(multi_hand_lms, fw: int, fh: int) -> list:
+def _resolve_hand_label(hand_lms, multi_handedness, i: int, fw: int) -> str:
     """
-    Return (slot, x, y) for every fingertip across all visible hands.
+    Resolve physical hand side using MediaPipe handedness + thumb-wrist geometry.
+
+    MediaPipe's multi_handedness assumes a mirrored (selfie) camera; for a
+    non-mirrored overhead/rear camera the label is flipped.  We cross-check
+    against anatomical geometry: for piano (hands palm-down) the left thumb MCP
+    (landmark 2) sits to the RIGHT of the wrist (landmark 0), the right thumb
+    MCP to the LEFT.  When the two sources disagree the geometry wins, which
+    automatically corrects any camera-mirror mismatch.
+    """
+    wrist_x     = hand_lms.landmark[0].x * fw
+    thumb_mcp_x = hand_lms.landmark[2].x * fw
+    geo_label   = 'L' if thumb_mcp_x > wrist_x else 'R'
+
+    if multi_handedness and i < len(multi_handedness):
+        raw      = multi_handedness[i].classification[0].label
+        mp_label = 'L' if raw == "Left" else 'R'
+        return mp_label if mp_label == geo_label else geo_label
+
+    return geo_label
+
+
+def _get_fingertips(multi_hand_lms, fw: int, fh: int,
+                    multi_handedness=None) -> list:
+    """
+    Return (slot, x, y, hand_label) for every fingertip across all visible hands.
     slot: 0=thumb  1=index  2=middle  3=ring  4=pinky
+    hand_label ('L'/'R'): physical hand, resolved via MediaPipe handedness
+    cross-validated with thumb-wrist geometry (handles camera mirror/flip).
     """
     tips = []
     if not multi_hand_lms:
         return tips
-    for hand_lms in multi_hand_lms:
+    for i, hand_lms in enumerate(multi_hand_lms):
+        label = _resolve_hand_label(hand_lms, multi_handedness, i, fw)
         for slot, lm_idx in enumerate(_FINGERTIPS):
             lm = hand_lms.landmark[lm_idx]
-            tips.append((slot, int(lm.x * fw), int(lm.y * fh)))
+            tips.append((slot, int(lm.x * fw), int(lm.y * fh), label))
     return tips
 
 
-def _draw_hand_overlay(display: np.ndarray, multi_hand_lms, fw: int, fh: int):
-    """Draw skeleton + cyan fingertip markers for all detected hands."""
+def _draw_hand_overlay(display: np.ndarray, multi_hand_lms, fw: int, fh: int,
+                       multi_handedness=None):
+    """Draw skeleton + cyan fingertip markers + L/R wrist label for all detected hands."""
     if not multi_hand_lms:
         return
     mp_drawing = mp.solutions.drawing_utils
     mp_hands   = mp.solutions.hands
     draw_spec_lm   = mp_drawing.DrawingSpec(color=(200, 200, 200), thickness=1, circle_radius=2)
     draw_spec_conn = mp_drawing.DrawingSpec(color=(100, 100, 100), thickness=1)
-    for hand_lms in multi_hand_lms:
+    for i, hand_lms in enumerate(multi_hand_lms):
         mp_drawing.draw_landmarks(display, hand_lms,
                                   mp_hands.HAND_CONNECTIONS,
                                   draw_spec_lm, draw_spec_conn)
@@ -292,6 +320,16 @@ def _draw_hand_overlay(display: np.ndarray, multi_hand_lms, fw: int, fh: int):
             px, py = int(lm.x * fw), int(lm.y * fh)
             cv2.circle(display, (px, py), 7, (255, 255, 0), -1)   # cyan fill
             cv2.circle(display, (px, py), 7, (0,   0,   0), 1)    # black outline
+
+        # L / R label at wrist (landmark 0)
+        label  = _resolve_hand_label(hand_lms, multi_handedness, i, fw)
+        wrist  = hand_lms.landmark[0]
+        wx, wy = int(wrist.x * fw), int(wrist.y * fh)
+        color  = (255, 80, 80) if label == 'L' else (80, 80, 255)  # blue-ish L, red-ish R
+        cv2.putText(display, label, (wx - 10, wy - 12),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 4, cv2.LINE_AA)   # black outline
+        cv2.putText(display, label, (wx - 10, wy - 12),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, color,   2, cv2.LINE_AA)     # coloured fill
 
 
 # ---------------------------------------------------------------------------
@@ -380,7 +418,7 @@ def _show_results(last_frame: np.ndarray, errors: list, missed: int,
         row("Max error",                         f"{max_e:.1f} px",                       254)
 
         draw.text((px + 30, py + 284),
-                  "Per-finger breakdown (L = lower keyboard half, R = upper keyboard half):",
+                  "Per-finger breakdown (L = physical left hand, R = physical right hand):",
                   font=fnt_small, fill=(160, 160, 160))
 
         draw.text((lx + 90, py + 302), "Left Hand",  font=fnt_finger, fill=(140, 170, 220))
@@ -549,13 +587,14 @@ def run_test():
                     if center is None:
                         continue    # note not in calibration range
 
-                    tips = _get_fingertips(latest_lms, fw, fh)
+                    tips = _get_fingertips(latest_lms, fw, fh,
+                                          multi_handedness=results.multi_handedness)
                     if not tips:
                         missed += 1
                         continue
 
-                    cx, cy = center
-                    hand   = 'L' if cx < kb_mid else 'R'
+                    cx, cy  = center
+                    kb_hand = 'L' if cx < kb_mid else 'R'   # keyboard-position fallback
                     # Identify playing finger: prefer fingertip inside key polygon.
                     # If no fingertip is over the key body the model has failed to
                     # place a landmark on the pressed key — count as detection_fail,
@@ -574,9 +613,9 @@ def run_test():
                         inside_tips = []
 
                     if inside_tips:
-                        best_slot, best_tx, best_ty = min(
-                            inside_tips, key=lambda t: abs(t[1] - cx)
-                        )
+                        best = min(inside_tips, key=lambda t: abs(t[1] - cx))
+                        best_slot, best_tx, best_ty, best_hand_label = best
+                        hand = best_hand_label if best_hand_label is not None else kb_hand
                         # Horizontal-only error (removes depth/anatomy bias)
                         h_err = abs(best_tx - cx)
                         errors.append(h_err)
@@ -587,7 +626,7 @@ def run_test():
                                         best_tx, best_ty, h_err, 'match'])
                     else:
                         # Detection fail: model missed the key polygon entirely
-                        detection_fail[hand] += 1
+                        detection_fail[kb_hand] += 1
                         flashes.append([_FLASH_FRAMES, cx, cy,
                                         cx, cy, 0, 'fail'])
 
@@ -601,7 +640,8 @@ def run_test():
             mask.draw(display)
             draw_mask_handles(display, mask)
 
-        _draw_hand_overlay(display, latest_lms, fw, fh)
+        _draw_hand_overlay(display, latest_lms, fw, fh,
+                           multi_handedness=results.multi_handedness)
 
         # Flash: key centre circle + error line
         next_flashes = []
@@ -729,7 +769,7 @@ def run_test():
         print(f"  Notes missed:     {missed}  (no hands detected)")
         print(f"  Min error:        {np.min(errors):.2f} px")
         print(f"  Max error:        {np.max(errors):.2f} px")
-        print(f"  Per-finger (L = left-frame half, R = right):")
+        print(f"  Per-finger (L = physical left hand, R = physical right hand):")
         for side, side_name in [('L', 'Left'), ('R', 'Right')]:
             print(f"    {side_name} hand:")
             for i, name in enumerate(_FINGER_NAMES):

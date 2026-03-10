@@ -36,7 +36,7 @@ LUX_DIM_THRESHOLD    = 100   # below → Dim
 LUX_BRIGHT_THRESHOLD = 500   # at or above → Bright; between → Indoor
 
 # Hand Size Input Validation (cm)
-HAND_SIZE_MIN_CM = 10.0
+HAND_SIZE_MIN_CM = 6.0
 HAND_SIZE_MAX_CM = 30.0
 
 # Hand Size Classification Thresholds (cm, based on hand span)
@@ -65,7 +65,7 @@ MODEL_ORDER         = [MODEL_MEDIAPIPE, MODEL_OPENPOSE_HAND]
 # OpenPose Hand — 21 finger keypoints (downloaded via download_openpose_model.py)
 OPENPOSE_HAND_PROTOTXT             = "models/openpose_hand.prototxt"
 OPENPOSE_HAND_CAFFEMODEL           = "models/openpose_hand.caffemodel"
-OPENPOSE_HAND_CONFIDENCE_THRESHOLD = 0.1
+OPENPOSE_HAND_CONFIDENCE_THRESHOLD = 0.05
 OPENPOSE_HAND_INPUT_WIDTH          = 368
 OPENPOSE_HAND_INPUT_HEIGHT         = 368
 

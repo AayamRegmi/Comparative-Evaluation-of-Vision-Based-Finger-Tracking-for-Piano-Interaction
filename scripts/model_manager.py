@@ -173,7 +173,7 @@ class OpenPoseHandModel(PoseModel):
         print("Loading OpenPose Hand from disk (~55 MB, may take 1 s)...")
         self._net = cv2.dnn.readNetFromCaffe(str(proto), str(caffe))
 
-        # Backend: CUDA (RTX) → OpenCL → CPU
+        # Backend: CUDA (RTX) → CPU (OpenCL skipped — driver incompatibility on Windows)
         cuda_ok = hasattr(cv2, "cuda") and cv2.cuda.getCudaEnabledDeviceCount() > 0
         if cuda_ok:
             self._net.setPreferableBackend(cv2.dnn.DNN_BACKEND_CUDA)
@@ -181,8 +181,8 @@ class OpenPoseHandModel(PoseModel):
             print("OpenPose Hand: CUDA FP16 backend")
         else:
             self._net.setPreferableBackend(cv2.dnn.DNN_BACKEND_OPENCV)
-            self._net.setPreferableTarget(cv2.dnn.DNN_TARGET_OPENCL)
-            print("OpenPose Hand: OpenCL/CPU backend")
+            self._net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
+            print("OpenPose Hand: CPU backend")
 
         self._loaded = True
         print("OpenPose Hand ready.")

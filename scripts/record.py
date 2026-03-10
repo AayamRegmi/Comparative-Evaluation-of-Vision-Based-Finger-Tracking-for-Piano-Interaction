@@ -114,6 +114,7 @@ def _save_session_metadata(out_dir: Path, pid: int, lux_value: float,
                             lux_label: str, hand_size_cm: float,
                             hand_size_label: str, fitz_type: int, fitz_label: str,
                             video_path: Path, rec_start: str, rec_stop: str,
+                            flip_y: bool = False,
                             midi_port: str = None, frames_csv: Path = None,
                             midi_jsonl: Path = None, midi_mid: Path = None,
                             video_fps: float = None,
@@ -129,7 +130,6 @@ def _save_session_metadata(out_dir: Path, pid: int, lux_value: float,
         "hand_size_cm":    hand_size_cm,
         "hand_size_label": hand_size_label,
         "flip_y":          flip_y,
-        "hand_size_label": hand_size_label,
         "fitzpatrick_type":   fitz_type,
         "fitzpatrick_label":  fitz_label,
         "fitzpatrick_source": fitzpatrick_source,
@@ -428,7 +428,7 @@ def _run_setup_screen(cap, midi_ports: list, midi_port_idx: int,
                 continue
             if not (config.HAND_SIZE_MIN_CM <= hand_val <= config.HAND_SIZE_MAX_CM):
                 error_msg = (f"Hand size must be "
-                             f"{config.HAND_SIZE_MIN_CM}–{config.HAND_SIZE_MAX_CM} cm")
+                             f"{config.HAND_SIZE_MIN_CM}-{config.HAND_SIZE_MAX_CM} cm")
                 continue
 
             fitz_raw = fields[2]["value"].strip()
@@ -776,6 +776,7 @@ def run_record():
                     out_dir, pid, lux_value, lux_label_str,
                     hand_size_cm, hand_size_label, fitz_type, fitz_label,
                     video_path, rec_start, rec_stop,
+                    flip_y=flip_y,
                     midi_port=midi_port_name,
                     frames_csv=frames_csv,
                     fitzpatrick_source=fitz_source,
@@ -824,6 +825,7 @@ def run_record():
                 out_dir, pid, lux_value, lux_label_str,
                 hand_size_cm, hand_size_label, fitz_type, fitz_label,
                 video_path, rec_start, rec_stop,
+                flip_y=flip_y,
                 midi_port=midi_port_name,
                 frames_csv=frames_csv,
                 fitzpatrick_source=fitz_source,

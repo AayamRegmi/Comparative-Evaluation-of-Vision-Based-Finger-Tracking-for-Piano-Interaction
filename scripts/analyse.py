@@ -71,10 +71,12 @@ _FINGER_NAMES = ("Thumb", "Index", "Middle", "Ring", "Pinky")
 # ---------------------------------------------------------------------------
 
 def _find_pid(session_dir: Path) -> str:
-    """Infer participant ID ('p001') from the MIDI JSONL filename."""
-    for f in sorted(Path(session_dir).glob("p*_midi.jsonl")):
-        return f.name.replace("_midi.jsonl", "")
-    raise FileNotFoundError(f"No p###_midi.jsonl found in {session_dir}")
+    """Infer participant ID ('p001') from session files."""
+    for f in sorted(Path(session_dir).glob("p*_session.json")):
+        return f.name.replace("_session.json", "")
+    for f in sorted(Path(session_dir).glob("p*.mp4")):
+        return f.name.replace(".mp4", "")
+    raise FileNotFoundError(f"Could not determine participant ID in {session_dir}")
 
 
 def _load_frames(frames_csv: Path) -> list:
@@ -117,10 +119,10 @@ def _scan_sessions(raw_dir: Path) -> list:
     for d in sorted(raw_dir.iterdir()):
         if not d.is_dir():
             continue
-        midi_files = sorted(d.glob("*_midi.jsonl"))
-        if not midi_files:
+        sess_files = sorted(d.glob("p*_session.json"))
+        if not sess_files:
             continue
-        pid = midi_files[0].stem.replace("_midi", "")
+        pid = sess_files[0].name.replace("_session.json", "")
         sessions.append({
             "pid":       pid,
             "dir":       d,
@@ -149,23 +151,69 @@ def _nearest_frame_idx(event_time: float, frame_times: list) -> int:
 #   slot: 0=Thumb  1=Index  2=Middle  3=Ring  4=Pinky
 # ---------------------------------------------------------------------------
 
+def _hand_label_from_mp(hand_lms, multi_handedness, i: int, fw: int) -> str:
+    """
+    Resolve physical hand side from MediaPipe landmarks + handedness label.
+
+    Strategy:
+      1. Read MediaPipe's own multi_handedness label ("Left" / "Right").
+         MediaPipe assumes a MIRRORED (selfie) camera, so on a non-mirrored
+         overhead/rear camera the label is flipped.
+      2. Validate against anatomical thumb geometry: for piano playing
+         (hands palm-down), the left thumb MCP sits to the RIGHT of the wrist,
+         the right thumb MCP to the LEFT — independent of camera orientation.
+      3. If the two sources agree, use the label directly.
+         If they disagree (mirror mismatch), flip the MP label so geometry wins.
+      4. When no handedness is available, fall back to geometry alone.
+    """
+    # Geometric chirality: thumb MCP (landmark 2) vs wrist (landmark 0)
+    wrist_x     = hand_lms.landmark[0].x * fw
+    thumb_mcp_x = hand_lms.landmark[2].x * fw
+    geo_label   = 'L' if thumb_mcp_x > wrist_x else 'R'
+
+    if multi_handedness and i < len(multi_handedness):
+        mp_raw   = multi_handedness[i].classification[0].label   # "Left" / "Right"
+        mp_label = 'L' if mp_raw == "Left" else 'R'
+        # If MediaPipe and geometry agree → no mirror issue, use either (same answer).
+        # If they disagree → camera is non-mirrored, flip MP label; geometry is correct.
+        return mp_label if mp_label == geo_label else geo_label
+
+    return geo_label
+
+
 def _tips_mediapipe(result, fw: int, fh: int) -> list:
+    """
+    Return (slot, x, y, hand_label) for every fingertip.
+
+    hand_label ('L'/'R') is the physical hand, resolved by combining
+    MediaPipe's multi_handedness with thumb-wrist geometry to survive
+    any camera mirror orientation.
+    """
     if not result.multi_hand_landmarks:
         return []
     tips = []
-    for hand_lms in result.multi_hand_landmarks:
+    for i, hand_lms in enumerate(result.multi_hand_landmarks):
+        label = _hand_label_from_mp(hand_lms, result.multi_handedness, i, fw)
         for slot, lm_idx in enumerate(_TIPS):
             lm = hand_lms.landmark[lm_idx]
-            tips.append((slot, int(lm.x * fw), int(lm.y * fh)))
+            tips.append((slot, int(lm.x * fw), int(lm.y * fh), label))
     return tips
 
 
 def _tips_openpose(kps: list) -> list:
+    """
+    Return (slot, x, y, None) for every detected fingertip.
+
+    OpenPose hand model processes a full keyboard-area crop (not a tightly
+    cropped single hand), so its wrist/thumb landmarks are not reliable enough
+    for geometry-based handedness inference.  hand_label is always None here;
+    the caller falls back to keyboard-midpoint position (kb_hand) for L/R.
+    """
     tips = []
     for slot, idx in enumerate(_TIPS):
         if kps[idx] is not None:
             x, y, _conf = kps[idx]
-            tips.append((slot, int(x), int(y)))
+            tips.append((slot, int(x), int(y), None))
     return tips
 
 
@@ -193,18 +241,31 @@ def _analyse_session(session_dir: Path, model_name: str, out_dir: Path,
     video_path   = session_dir / f"{pid}.mp4"
     session_json = session_dir / f"{pid}_session.json"
 
-    for p in (frames_csv, midi_jsonl, video_path):
-        if not p.exists():
-            raise FileNotFoundError(f"Required session file not found: {p}")
+    if not video_path.exists():
+        raise FileNotFoundError(f"Video not found: {video_path}")
+    if not midi_jsonl.exists():
+        raise FileNotFoundError(
+            f"{pid}: No MIDI data found. Session was recorded without MIDI "
+            f"(or the midi_jsonl file is missing). Cannot compute MJMPE."
+        )
     if not _CAL_FILE.exists():
         raise FileNotFoundError(
             f"Key calibration not found: {_CAL_FILE}\n"
             f"Run key_calibration.py first."
         )
 
-    frame_times = _load_frames(frames_csv)
-    note_events = _load_midi_notes(midi_jsonl)
     metadata    = _load_session_meta(session_json)
+    note_events = _load_midi_notes(midi_jsonl)
+
+    if frames_csv.exists():
+        frame_times = _load_frames(frames_csv)
+    else:
+        fps = float(metadata.get("video_fps") or 30.0)
+        print(f"  Warning: {frames_csv.name} missing -- estimating frame times at {fps:.1f} fps")
+        cap_tmp = cv2.VideoCapture(str(video_path))
+        n_frames = int(cap_tmp.get(cv2.CAP_PROP_FRAME_COUNT))
+        cap_tmp.release()
+        frame_times = [(i / fps, i) for i in range(n_frames)]
     mask        = KeyMask.load(_CAL_FILE)
 
     print(f"\n[{pid} | {model_name}]  {len(note_events)} notes  "
@@ -228,8 +289,30 @@ def _analyse_session(session_dir: Path, model_name: str, out_dir: Path,
     else:
         _op = OpenPoseHandModel(config, _PROJECT_ROOT)
         _op.load()
+        # Pre-compute crop bounds from calibration so OpenPose sees hands at useful scale.
+        # The full frame (~1920×1080) squished to 368×368 makes hands ~20 px — too small.
+        # Cropping to the keyboard row + hand height above gives ~400×400 effective input.
+        _crop_key_xs = [k['center'][0] for k in mask.keys] if mask.keys else None
+        _crop_key_ys = [k['center'][1] for k in mask.keys] if mask.keys else None
         def _get_tips(frame):
-            return _tips_openpose(_op.infer(frame))
+            if _crop_key_xs and _crop_key_ys:
+                h, w = frame.shape[:2]
+                x0 = max(0,   int(min(_crop_key_xs)) - 150)
+                x1 = min(w,   int(max(_crop_key_xs)) + 150)
+                y0 = max(0,   int(min(_crop_key_ys)) - 500)  # 500 px above keys for hands
+                y1 = min(h,   int(max(_crop_key_ys)) + 80)
+                crop = frame[y0:y1, x0:x1]
+            else:
+                x0, y0, crop = 0, 0, frame
+            kps = _op.infer(crop)
+            # Offset keypoint coordinates back to full-frame space
+            kps_offset = []
+            for kp in kps:
+                if kp is None:
+                    kps_offset.append(None)
+                else:
+                    kps_offset.append((int(kp[0] + x0), int(kp[1] + y0), kp[2]))
+            return _tips_openpose(kps_offset)
         def _close(): _op.close()
 
     cap = cv2.VideoCapture(str(video_path))
@@ -272,7 +355,7 @@ def _analyse_session(session_dir: Path, model_name: str, out_dir: Path,
             continue
 
         cx, cy   = key_info["center"]
-        hand     = 'L' if cx < kb_mid else 'R'
+        kb_hand  = 'L' if cx < kb_mid else 'R'   # keyboard-position fallback (OpenPose)
         key_poly = key_info["polygon"]
 
         frame_idx = _nearest_frame_idx(evt["time_s"], frame_times)
@@ -296,14 +379,17 @@ def _analyse_session(session_dir: Path, model_name: str, out_dir: Path,
                        ) >= 0]
 
         if inside_tips:
-            best_slot, best_tx, _ty = min(inside_tips, key=lambda t: abs(t[1] - cx))
+            best = min(inside_tips, key=lambda t: abs(t[1] - cx))
+            best_slot, best_tx, _ty, best_hand_label = best
+            # Use MediaPipe's physical handedness; fall back to keyboard position for OpenPose
+            hand  = best_hand_label if best_hand_label is not None else kb_hand
             h_err = abs(best_tx - cx)
             errors.append(h_err)
             per_finger[hand][best_slot].append(h_err)
             if h_err < mask.wkw * config.ACCURACY_THRESHOLD_RATIO:
                 accurate[hand] += 1
         else:
-            detection_fail[hand] += 1
+            detection_fail[kb_hand] += 1
 
     print()
     cap.release()
