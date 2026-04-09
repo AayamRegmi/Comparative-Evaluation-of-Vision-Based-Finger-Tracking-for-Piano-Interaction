@@ -44,6 +44,7 @@ except ImportError:
 
 # Root folder for all raw participant data
 _RAW_DIR = Path(__file__).parent.parent / "data" / "raw"
+_CAL_FILE = Path(__file__).parent.parent / "data" / "calibration" / "key_centers.json"
 
 
 # ---------------------------------------------------------------------------
@@ -510,90 +511,15 @@ def run_record():
     else:
         print("WARNING: No MIDI input ports detected. Recording will proceed without MIDI.")
 
-    # --- Setup screen ---
-    print("Waiting for session setup...")
-    lux_value, hand_size_cm, midi_port_idx, cam_idx, cap, flip_y, manual_fitz = _run_setup_screen(
-        cap, midi_ports, midi_port_idx, avail_cams, cam_idx
-    )
-    hand_size_label = _hand_size_label(hand_size_cm) if hand_size_cm else "Unknown"
-
-    if lux_value is None:
-        cap.release()
-        cv2.destroyAllWindows()
-        hands.close()
-        return
-
-    # Frame dimensions (may differ if user switched camera during setup)
-    _fw = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    _fh = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-
-    lux_label_str    = lux_to_label(lux_value)
-    hand_size_label  = _hand_size_label(hand_size_cm)
-    pid              = _next_participant_id()
-    midi_port_name = midi_ports[midi_port_idx] if midi_ports else None
-    print(f"Lux: {lux_value:.0f} lux  ->  {lux_label_str}  |  Hand size: {hand_size_cm} cm")
-    print(f"Participant ID: p{pid:03d}")
-    print(f"MIDI port: {midi_port_name or 'none'}")
-    print("SPACE: rec/stop   S: stats   R: retest fitz   ESC: quit\n")
-
-    # --- Session state ---
-    _FITZ_SAMPLES   = 20   # frames to average before committing
-    if manual_fitz:
-        fitz_detected  = True
-        fitz_type      = manual_fitz
-        fitz_label     = _FITZ_TYPE_LABELS.get(manual_fitz, "Unknown")
-        fitz_avg_ita   = 0.0
-        fitz_source    = "manual"
-        fitz_retesting = False
-        fitz_ita_buf   = []
-        print(f"Fitzpatrick: Type {fitz_type} ({fitz_label}) [manually set]")
-    else:
-        fitz_detected  = False
-        fitz_type      = 0
-        fitz_label     = ""
-        fitz_avg_ita   = 0.0
-        fitz_source    = "auto"
-        fitz_retesting = False
-        fitz_ita_buf   = []
-
-    recording   = False
-    show_stats  = False
-    writer      = None
-    out_dir     = None
-    video_path  = None
-    rec_start   = None
-    rec_fps     = float(config.CAP_FPS)   # updated to actual FPS when recording starts
-
-    # MIDI / frame-sync state
-    midi_rec     = None   # MidiRecorder instance (active during recording)
-    frame_logger = None   # FrameLogger instance  (active during recording)
-    rec_t0       = 0.0    # perf_counter() at recording start (shared clock origin)
-
-    stats = StatsCollector(config.WARMUP_FRAMES, config.STAT_FRAMES)
-
-    # Load key calibration mask (or create default)
+    # --- One-time inits (persist across sessions) ---
+    _FITZ_SAMPLES = 20
     _cal_dir  = Path(__file__).parent.parent / "data" / "calibration"
     _cal_file = _cal_dir / "key_centers.json"
-    if _cal_file.exists():
-        try:
-            mask = KeyMask.load(_cal_file)
-            print(f"Key calibration loaded: {mask.num_white} white keys  (M to toggle, drag to adjust)")
-        except Exception as _e:
-            print(f"Note: key calibration not loaded ({_e}), using default")
-            mask = KeyMask.default(_fw, _fh)
-    else:
-        mask = KeyMask.default(_fw, _fh)
-        print("No calibration file found, using default layout  (M to toggle, drag to adjust)")
+    stats     = StatsCollector(config.WARMUP_FRAMES, config.STAT_FRAMES)
+    mask      = None   # loaded after first setup (needs frame dimensions)
+    panel     = None
     show_mask = True
-
-    # Mouse callback: drag to resize/move, auto-save when drag ends
-    def _on_mouse(event, x, y, flags, _):
-        if mask.on_mouse(event, x, y, flags):
-            mask.save(_cal_dir, _fw, _fh)
-
-    cv2.setMouseCallback(_WIN_NAME, _on_mouse)
-
-    panel = MaskControlPanel(mask, save_fn=lambda: mask.save(_cal_dir, _fw, _fh))
+    show_stats = False
 
     lux_colors = {
         "Dim":    (100, 100, 255),
@@ -601,177 +527,314 @@ def run_record():
         "Bright": (0,   255, 255),
     }
 
-    while cap.isOpened():
-        loop_start = time.perf_counter()
+    next_session = True
+    while next_session:
+        next_session = False
 
-        success, frame = cap.read()
-        if not success:
-            print("Frame capture failed")
-            break
-        if flip_y:
-            frame = cv2.flip(frame, -1)
+        # --- Setup screen ---
+        print("Waiting for session setup...")
+        lux_value, hand_size_cm, midi_port_idx, cam_idx, cap, flip_y, manual_fitz = _run_setup_screen(
+            cap, midi_ports, midi_port_idx, avail_cams, cam_idx
+        )
 
-        # Run MediaPipe at full 1080p — no resize for recording quality
-        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        rgb.flags.writeable = False
+        if lux_value is None:
+            break   # user pressed ESC on setup — quit entirely
 
-        t0      = time.perf_counter()
-        results = hands.process(rgb)
-        t1      = time.perf_counter()
-        inference_ms = (t1 - t0) * 1000
+        # Frame dimensions (may differ if user switched camera during setup)
+        _fw = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        _fh = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-        # --- Fitzpatrick detection: average over _FITZ_SAMPLES frames for stability ---
-        if not fitz_detected and results.multi_hand_landmarks:
-            _, _, ita_sample = detect_skin_type(
-                frame,
-                results.multi_hand_landmarks[0],
-                frame.shape[1],
-                frame.shape[0],
-            )
-            if ita_sample is not None:
-                fitz_ita_buf.append(ita_sample)
-                if len(fitz_ita_buf) >= _FITZ_SAMPLES:
-                    fitz_avg_ita   = float(np.mean(fitz_ita_buf))
-                    fitz_type, fitz_label = ita_to_fitzpatrick(fitz_avg_ita)
-                    fitz_detected  = True
-                    fitz_retesting = False
-                    fitz_ita_buf   = []
-                    print(f"Fitzpatrick: Type {fitz_type} ({fitz_label})  ITA={fitz_avg_ita:.1f}deg  (avg over {_FITZ_SAMPLES} frames)")
+        lux_label_str  = lux_to_label(lux_value)
+        hand_size_label = _hand_size_label(hand_size_cm)
+        pid            = _next_participant_id()
+        midi_port_name = midi_ports[midi_port_idx] if midi_ports else None
+        print(f"Lux: {lux_value:.0f} lux  ->  {lux_label_str}  |  Hand size: {hand_size_cm} cm")
+        print(f"Participant ID: p{pid:03d}")
+        print(f"MIDI port: {midi_port_name or 'none'}")
+        print("SPACE: rec/stop   N: next session   S: stats   R: retest fitz   ESC: quit\n")
 
-        total_latency_ms = (time.perf_counter() - loop_start) * 1000
-        stats.update(loop_start, inference_ms, total_latency_ms)
-
-        # --- Save raw frame (no overlays) to video file ---
-        if recording and writer is not None:
-            writer.write(frame)
-            if frame_logger is not None:
-                frame_logger.log()
-
-        # --- All overlays go on a display copy, keeping the saved frame clean ---
-        display = frame.copy()
-
-        # Key calibration mask (drawn first so all other overlays sit on top)
-        if show_mask:
-            mask.draw(display)
-            if not recording:
-                draw_mask_handles(display, mask)
-
-        # Stats overlay (top-left)
-        if show_stats:
-            ys = 35
-            if not stats.warmup_done:
-                cv2.putText(display, f"Stats: warming up ({stats.frame_count}/{config.WARMUP_FRAMES})",
-                            (10, ys), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (160, 160, 160), 1)
-            else:
-                avg_fps = np.mean(list(stats.fps_history)[-30:])
-                cv2.putText(display, f"FPS: {avg_fps:4.1f}", (10, ys),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.9, config.TEXT_COLOR_FPS, 2)
-                ys += 32
-                cv2.putText(display, f"Inf: {inference_ms:4.1f} ms", (10, ys),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, config.TEXT_COLOR_INF, 2)
-                ys += 28
-                cv2.putText(display, f"Lat: {total_latency_ms:4.1f} ms", (10, ys),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, config.TEXT_COLOR_LAT, 2)
-
-        # Session info (top-right)
-        fw = display.shape[1]
-        yr = 35
-        lux_col = lux_colors.get(lux_label_str, config.TEXT_COLOR_SESSION)
-        cv2.putText(display, f"Lux: {lux_value:.0f}  ({lux_label_str})",
-                    (fw - 340, yr), cv2.FONT_HERSHEY_SIMPLEX, 0.65, lux_col, 2)
-        yr += 30
-        cv2.putText(display, f"Hand: {hand_size_cm:.1f} cm  ({hand_size_label})",
-                    (fw - 340, yr), cv2.FONT_HERSHEY_SIMPLEX, 0.65, config.TEXT_COLOR_SESSION, 2)
-        yr += 30
-        if fitz_detected:
-            tag = " (manual)" if fitz_source == "manual" else f"  (ITA {fitz_avg_ita:.0f})"
-            fitz_text = f"Fitz: Type {fitz_type}  {fitz_label}{tag}"
-        elif fitz_ita_buf:
-            fitz_text = f"Fitz: sampling... ({len(fitz_ita_buf)}/{_FITZ_SAMPLES})"
+        # --- Session state ---
+        if manual_fitz:
+            fitz_detected  = True
+            fitz_type      = manual_fitz
+            fitz_label     = _FITZ_TYPE_LABELS.get(manual_fitz, "Unknown")
+            fitz_avg_ita   = 0.0
+            fitz_source    = "manual"
+            fitz_retesting = False
+            fitz_ita_buf   = []
+            print(f"Fitzpatrick: Type {fitz_type} ({fitz_label}) [manually set]")
         else:
-            fitz_text = "Fitz: show hand to detect..."
-        cv2.putText(display, fitz_text,
-                    (fw - 340, yr), cv2.FONT_HERSHEY_SIMPLEX, 0.65, config.TEXT_COLOR_FITZPATRICK, 2)
+            fitz_detected  = False
+            fitz_type      = 0
+            fitz_label     = ""
+            fitz_avg_ita   = 0.0
+            fitz_source    = "auto"
+            fitz_retesting = False
+            fitz_ita_buf   = []
 
-        # REC indicator (top-left, below stats if visible)
-        rec_y = 100 if show_stats else 35
-        if recording:
-            cv2.circle(display, (28, rec_y - 7), 12, (0, 0, 220), -1)
-            cv2.putText(display, f"REC  p{pid:03d}", (46, rec_y),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 220), 2)
+        recording    = False
+        writer       = None
+        out_dir      = None
+        video_path   = None
+        rec_start    = None
+        rec_fps      = float(config.CAP_FPS)
+        midi_rec     = None
+        frame_logger = None
+        rec_t0       = 0.0
 
-        # Fitzpatrick retest overlay
-        if fitz_retesting:
-            fh, fw2 = display.shape[:2]
-            bx, bw, bh = fw2 // 2 - 280, 560, 90
-            by = fh // 2 - 45
-            cv2.rectangle(display, (bx, by), (bx + bw, by + bh), (30, 30, 30), -1)
-            cv2.rectangle(display, (bx, by), (bx + bw, by + bh), config.TEXT_COLOR_FITZPATRICK, 2)
-            cv2.putText(display, "FITZPATRICK RETEST",
-                        (bx + 20, by + 32), cv2.FONT_HERSHEY_SIMPLEX,
-                        0.85, config.TEXT_COLOR_FITZPATRICK, 2)
-            cv2.putText(display, "Place your hand in view",
-                        (bx + 20, by + 68), cv2.FONT_HERSHEY_SIMPLEX,
-                        0.7, (200, 200, 200), 1)
-
-        # Key hint bar (bottom) — dark strip so text is always readable
-        fh_d, fw_d = display.shape[:2]
-        cv2.rectangle(display, (0, fh_d - 30), (fw_d, fh_d), (20, 20, 20), -1)
-        hint_y    = fh_d - 9
-        st_state   = "ON" if show_stats else "OFF"
-        rec_state  = "STOP" if recording else "REC"
-        mask_part  = f"  M:mask({'ON' if show_mask else 'OFF'})  N:ctrl({'ON' if panel.visible else 'OFF'})  V:reset-warp"
-        cv2.putText(display,
-                    f"SPACE:{rec_state}  S:stats({st_state})  R:fitz{mask_part}  ESC:quit",
-                    (10, hint_y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (200, 200, 200), 1)
-
-        cv2.imshow(_WIN_NAME, display)
-        panel.render()
-
-        key = cv2.waitKey(1) & 0xFF
-
-        if key == config.EXIT_KEY:
-            break
-        elif key == ord(" "):
-            if not recording:
-                # Measure actual FPS from recent loop timing before opening writer
-                if stats.warmup_done and stats.fps_history:
-                    rec_fps = float(np.mean(list(stats.fps_history)[-30:]))
-                    rec_fps = max(1.0, min(rec_fps, float(config.CAP_FPS)))
-                else:
-                    rec_fps = float(config.CAP_FPS)
-                # Start recording — establish shared clock origin first
-                rec_t0    = time.perf_counter()
-                rec_start = datetime.now().isoformat(timespec="seconds")
-                writer, out_dir, video_path = _start_recording(frame, pid, rec_fps)
-                frame_logger = FrameLogger(rec_t0)
-                if midi_port_name:
-                    midi_rec = MidiRecorder(midi_port_name)
-                    midi_rec.start(rec_t0)
-                recording = True
-                print(f"Recording STARTED  ({rec_start})  FPS={rec_fps:.1f}  ->  {video_path}")
-                if midi_rec:
-                    print(f"MIDI recording on: {midi_port_name}")
+        # Load mask once; keep across sessions so adjustments persist
+        if mask is None:
+            if _cal_file.exists():
+                try:
+                    mask = KeyMask.load(_cal_file)
+                    print(f"Key calibration loaded: {mask.num_white} white keys")
+                except Exception as _e:
+                    print(f"Note: key calibration not loaded ({_e}), using default")
+                    mask = KeyMask.default(_fw, _fh)
             else:
-                # Stop recording
-                recording = False
-                rec_stop  = datetime.now().isoformat(timespec="seconds")
+                mask = KeyMask.default(_fw, _fh)
+                print("No calibration file found, using default layout")
 
-                # Stop MIDI listener before flushing files
-                midi_jsonl = midi_mid = frames_csv = None
-                if midi_rec is not None:
-                    midi_rec.stop()
+            def _on_mouse(event, x, y, flags, _):
+                if mask.on_mouse(event, x, y, flags):
+                    mask.save(_cal_dir, _fw, _fh)
+
+            cv2.setMouseCallback(_WIN_NAME, _on_mouse)
+            panel = MaskControlPanel(mask, save_fn=lambda: mask.save(_cal_dir, _fw, _fh))
+
+        # --- Per-session recording loop ---
+        while cap.isOpened():
+            loop_start = time.perf_counter()
+
+            success, frame = cap.read()
+            if not success:
+                print("Frame capture failed")
+                break
+            if flip_y:
+                frame = cv2.flip(frame, -1)
+    
+            # Run MediaPipe at full 1080p — no resize for recording quality
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            rgb.flags.writeable = False
+    
+            t0      = time.perf_counter()
+            results = hands.process(rgb)
+            t1      = time.perf_counter()
+            inference_ms = (t1 - t0) * 1000
+    
+            # --- Fitzpatrick detection: average over _FITZ_SAMPLES frames for stability ---
+            if not fitz_detected and results.multi_hand_landmarks:
+                _, _, ita_sample = detect_skin_type(
+                    frame,
+                    results.multi_hand_landmarks[0],
+                    frame.shape[1],
+                    frame.shape[0],
+                )
+                if ita_sample is not None:
+                    fitz_ita_buf.append(ita_sample)
+                    if len(fitz_ita_buf) >= _FITZ_SAMPLES:
+                        fitz_avg_ita   = float(np.mean(fitz_ita_buf))
+                        fitz_type, fitz_label = ita_to_fitzpatrick(fitz_avg_ita)
+                        fitz_detected  = True
+                        fitz_retesting = False
+                        fitz_ita_buf   = []
+                        print(f"Fitzpatrick: Type {fitz_type} ({fitz_label})  ITA={fitz_avg_ita:.1f}deg  (avg over {_FITZ_SAMPLES} frames)")
+    
+            total_latency_ms = (time.perf_counter() - loop_start) * 1000
+            stats.update(loop_start, inference_ms, total_latency_ms)
+    
+            # --- Save raw frame (no overlays) to video file ---
+            if recording and writer is not None:
+                writer.write(frame)
+                if frame_logger is not None:
+                    frame_logger.log()
+    
+            # --- All overlays go on a display copy, keeping the saved frame clean ---
+            display = frame.copy()
+    
+            # Key calibration mask (drawn first so all other overlays sit on top)
+            if show_mask:
+                mask.draw(display)
+                if not recording:
+                    draw_mask_handles(display, mask)
+    
+            # Stats overlay (top-left)
+            if show_stats:
+                ys = 35
+                if not stats.warmup_done:
+                    cv2.putText(display, f"Stats: warming up ({stats.frame_count}/{config.WARMUP_FRAMES})",
+                                (10, ys), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (160, 160, 160), 1)
+                else:
+                    avg_fps = np.mean(list(stats.fps_history)[-30:])
+                    cv2.putText(display, f"FPS: {avg_fps:4.1f}", (10, ys),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.9, config.TEXT_COLOR_FPS, 2)
+                    ys += 32
+                    cv2.putText(display, f"Inf: {inference_ms:4.1f} ms", (10, ys),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, config.TEXT_COLOR_INF, 2)
+                    ys += 28
+                    cv2.putText(display, f"Lat: {total_latency_ms:4.1f} ms", (10, ys),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, config.TEXT_COLOR_LAT, 2)
+    
+            # Session info (top-right)
+            fw = display.shape[1]
+            yr = 35
+            lux_col = lux_colors.get(lux_label_str, config.TEXT_COLOR_SESSION)
+            cv2.putText(display, f"Lux: {lux_value:.0f}  ({lux_label_str})",
+                        (fw - 340, yr), cv2.FONT_HERSHEY_SIMPLEX, 0.65, lux_col, 2)
+            yr += 30
+            cv2.putText(display, f"Hand: {hand_size_cm:.1f} cm  ({hand_size_label})",
+                        (fw - 340, yr), cv2.FONT_HERSHEY_SIMPLEX, 0.65, config.TEXT_COLOR_SESSION, 2)
+            yr += 30
+            if fitz_detected:
+                tag = " (manual)" if fitz_source == "manual" else f"  (ITA {fitz_avg_ita:.0f})"
+                fitz_text = f"Fitz: Type {fitz_type}  {fitz_label}{tag}"
+            elif fitz_ita_buf:
+                fitz_text = f"Fitz: sampling... ({len(fitz_ita_buf)}/{_FITZ_SAMPLES})"
+            else:
+                fitz_text = "Fitz: show hand to detect..."
+            cv2.putText(display, fitz_text,
+                        (fw - 340, yr), cv2.FONT_HERSHEY_SIMPLEX, 0.65, config.TEXT_COLOR_FITZPATRICK, 2)
+    
+            # REC indicator (top-left, below stats if visible)
+            rec_y = 100 if show_stats else 35
+            if recording:
+                cv2.circle(display, (28, rec_y - 7), 12, (0, 0, 220), -1)
+                cv2.putText(display, f"REC  p{pid:03d}", (46, rec_y),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 220), 2)
+    
+            # Fitzpatrick retest overlay
+            if fitz_retesting:
+                fh, fw2 = display.shape[:2]
+                bx, bw, bh = fw2 // 2 - 280, 560, 90
+                by = fh // 2 - 45
+                cv2.rectangle(display, (bx, by), (bx + bw, by + bh), (30, 30, 30), -1)
+                cv2.rectangle(display, (bx, by), (bx + bw, by + bh), config.TEXT_COLOR_FITZPATRICK, 2)
+                cv2.putText(display, "FITZPATRICK RETEST",
+                            (bx + 20, by + 32), cv2.FONT_HERSHEY_SIMPLEX,
+                            0.85, config.TEXT_COLOR_FITZPATRICK, 2)
+                cv2.putText(display, "Place your hand in view",
+                            (bx + 20, by + 68), cv2.FONT_HERSHEY_SIMPLEX,
+                            0.7, (200, 200, 200), 1)
+    
+            # Key hint bar (bottom) — dark strip so text is always readable
+            fh_d, fw_d = display.shape[:2]
+            cv2.rectangle(display, (0, fh_d - 30), (fw_d, fh_d), (20, 20, 20), -1)
+            hint_y    = fh_d - 9
+            st_state   = "ON" if show_stats else "OFF"
+            rec_state  = "STOP" if recording else "REC"
+            next_part  = "  N:next-session" if not recording else ""
+            mask_part  = f"  M:mask({'ON' if show_mask else 'OFF'})  P:ctrl({'ON' if panel.visible else 'OFF'})  V:reset-warp"
+            cv2.putText(display,
+                        f"SPACE:{rec_state}  S:stats({st_state})  R:fitz{mask_part}{next_part}  ESC:quit",
+                        (10, hint_y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (200, 200, 200), 1)
+    
+            cv2.imshow(_WIN_NAME, display)
+            panel.render()
+    
+            key = cv2.waitKey(1) & 0xFF
+    
+            if key == config.EXIT_KEY:
+                break
+            elif key == ord(" "):
+                if not recording:
+                    # Measure actual FPS from recent loop timing before opening writer
+                    if stats.warmup_done and stats.fps_history:
+                        rec_fps = float(np.mean(list(stats.fps_history)[-30:]))
+                        rec_fps = max(1.0, min(rec_fps, float(config.CAP_FPS)))
+                    else:
+                        rec_fps = float(config.CAP_FPS)
+                    # Start recording — establish shared clock origin first
+                    rec_t0    = time.perf_counter()
+                    rec_start = datetime.now().isoformat(timespec="seconds")
+                    writer, out_dir, video_path = _start_recording(frame, pid, rec_fps)
+                    frame_logger = FrameLogger(rec_t0)
+                    # Snapshot the active calibration into the session folder
+                    pid_str = f"p{pid:03d}"
+                    if _CAL_FILE.exists():
+                        import shutil
+                        shutil.copy2(_CAL_FILE, out_dir / f"{pid_str}_key_centers.json")
+                        print(f"Calibration snapshot saved → {pid_str}_key_centers.json")
+                    if midi_port_name:
+                        midi_rec = MidiRecorder(midi_port_name)
+                        midi_rec.start(rec_t0)
+                    recording = True
+                    print(f"Recording STARTED  ({rec_start})  FPS={rec_fps:.1f}  ->  {video_path}")
+                    if midi_rec:
+                        print(f"MIDI recording on: {midi_port_name}")
+                else:
+                    # Stop recording
+                    recording = False
+                    rec_stop  = datetime.now().isoformat(timespec="seconds")
+    
+                    # Stop MIDI listener before flushing files
+                    midi_jsonl = midi_mid = frames_csv = None
+                    if midi_rec is not None:
+                        midi_rec.stop()
+                        pid_str = f"p{pid:03d}"
+                        midi_jsonl, midi_mid = midi_rec.save(out_dir, pid_str)
+                        midi_rec = None
+                    if frame_logger is not None:
+                        pid_str    = f"p{pid:03d}"
+                        frames_csv = frame_logger.save(out_dir, pid_str)
+                        frame_logger = None
+    
+                    if writer is not None:
+                        writer.release()
+                        writer = None
+                    _save_session_metadata(
+                        out_dir, pid, lux_value, lux_label_str,
+                        hand_size_cm, hand_size_label, fitz_type, fitz_label,
+                        video_path, rec_start, rec_stop,
+                        flip_y=flip_y,
+                        midi_port=midi_port_name,
+                        frames_csv=frames_csv,
+                        fitzpatrick_source=fitz_source,
+                        fitzpatrick_ita=(fitz_avg_ita if fitz_source == "auto" else None),
+                        midi_jsonl=midi_jsonl,
+                        midi_mid=midi_mid,
+                        video_fps=rec_fps,
+                    )
+                    print(f"Recording STOPPED  ({rec_stop})")
+            elif key == ord("s") or key == ord("S"):
+                show_stats = not show_stats
+            elif key == ord("m") or key == ord("M"):
+                show_mask = not show_mask
+            elif key == ord("n") or key == ord("N"):
+                if not recording:
+                    print(f"Moving to next session (current: p{pid:03d})")
+                    next_session = True
+                    break
+            elif key == ord("p") or key == ord("P"):
+                panel.toggle()
+            elif key == ord("r") or key == ord("R"):
+                fitz_detected  = False
+                fitz_type      = 0
+                fitz_label     = ""
+                fitz_ita_buf   = []
+                fitz_avg_ita   = 0.0
+                fitz_source    = "auto"   # clear manual; switch to auto-detect
+                fitz_retesting = True
+                print("Fitzpatrick retest triggered — place hand in view")
+            elif key == ord("v") or key == ord("V"):
+                mask.reset_warp()
+                print("Mask warp reset to rectangle.")
+    
+        # Ensure writer is closed if user exits mid-recording or presses N
+        if writer is not None:
+            rec_stop = datetime.now().isoformat(timespec="seconds")
+            writer.release()
+
+            midi_jsonl = midi_mid = frames_csv = None
+            if midi_rec is not None:
+                midi_rec.stop()
+                if out_dir:
                     pid_str = f"p{pid:03d}"
                     midi_jsonl, midi_mid = midi_rec.save(out_dir, pid_str)
-                    midi_rec = None
-                if frame_logger is not None:
-                    pid_str    = f"p{pid:03d}"
-                    frames_csv = frame_logger.save(out_dir, pid_str)
-                    frame_logger = None
+            if frame_logger is not None and out_dir:
+                pid_str    = f"p{pid:03d}"
+                frames_csv = frame_logger.save(out_dir, pid_str)
 
-                if writer is not None:
-                    writer.release()
-                    writer = None
+            if out_dir and video_path:
                 _save_session_metadata(
                     out_dir, pid, lux_value, lux_label_str,
                     hand_size_cm, hand_size_label, fitz_type, fitz_label,
@@ -785,58 +848,9 @@ def run_record():
                     midi_mid=midi_mid,
                     video_fps=rec_fps,
                 )
-                print(f"Recording STOPPED  ({rec_stop})")
-        elif key == ord("s") or key == ord("S"):
-            show_stats = not show_stats
-        elif key == ord("m") or key == ord("M"):
-            show_mask = not show_mask
-        elif key == ord("n") or key == ord("N"):
-            panel.toggle()
-        elif key == ord("r") or key == ord("R"):
-            fitz_detected  = False
-            fitz_type      = 0
-            fitz_label     = ""
-            fitz_ita_buf   = []
-            fitz_avg_ita   = 0.0
-            fitz_source    = "auto"   # clear manual; switch to auto-detect
-            fitz_retesting = True
-            print("Fitzpatrick retest triggered — place hand in view")
-        elif key == ord("v") or key == ord("V"):
-            mask.reset_warp()
-            print("Mask warp reset to rectangle.")
 
-    # Ensure writer is closed if user exits mid-recording
-    if writer is not None:
-        rec_stop = datetime.now().isoformat(timespec="seconds")
-        writer.release()
-
-        midi_jsonl = midi_mid = frames_csv = None
-        if midi_rec is not None:
-            midi_rec.stop()
-            if out_dir:
-                pid_str = f"p{pid:03d}"
-                midi_jsonl, midi_mid = midi_rec.save(out_dir, pid_str)
-        if frame_logger is not None and out_dir:
-            pid_str    = f"p{pid:03d}"
-            frames_csv = frame_logger.save(out_dir, pid_str)
-
-        if out_dir and video_path:
-            _save_session_metadata(
-                out_dir, pid, lux_value, lux_label_str,
-                hand_size_cm, hand_size_label, fitz_type, fitz_label,
-                video_path, rec_start, rec_stop,
-                flip_y=flip_y,
-                midi_port=midi_port_name,
-                frames_csv=frames_csv,
-                fitzpatrick_source=fitz_source,
-                fitzpatrick_ita=(fitz_avg_ita if fitz_source == "auto" else None),
-                midi_jsonl=midi_jsonl,
-                midi_mid=midi_mid,
-                video_fps=rec_fps,
-            )
-
+    # Final teardown after all sessions complete
     stats.print_final_stats(frame.shape[1], frame.shape[0], config.MODEL_COMPLEXITY)
-
     cap.release()
     cv2.destroyAllWindows()
     hands.close()
