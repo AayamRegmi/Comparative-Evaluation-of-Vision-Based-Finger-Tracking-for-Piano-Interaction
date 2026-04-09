@@ -248,11 +248,18 @@ def _analyse_session(session_dir: Path, model_name: str, out_dir: Path,
             f"{pid}: No MIDI data found. Session was recorded without MIDI "
             f"(or the midi_jsonl file is missing). Cannot compute MJMPE."
         )
-    if not _CAL_FILE.exists():
+    # Prefer session-local calibration snapshot; fall back to global file
+    session_cal = session_dir / f"{pid}_key_centers.json"
+    cal_file    = session_cal if session_cal.exists() else _CAL_FILE
+    if not cal_file.exists():
         raise FileNotFoundError(
-            f"Key calibration not found: {_CAL_FILE}\n"
-            f"Run key_calibration.py first."
+            f"Key calibration not found for {pid}.\n"
+            f"Run key_calibration.py, or use recalibrate.py to align against the saved video."
         )
+    if cal_file == session_cal:
+        print(f"  Using session calibration: {session_cal.name}")
+    else:
+        print(f"  Warning: no session calibration found, using global key_centers.json")
 
     metadata    = _load_session_meta(session_json)
     note_events = _load_midi_notes(midi_jsonl)
@@ -266,7 +273,7 @@ def _analyse_session(session_dir: Path, model_name: str, out_dir: Path,
         n_frames = int(cap_tmp.get(cv2.CAP_PROP_FRAME_COUNT))
         cap_tmp.release()
         frame_times = [(i / fps, i) for i in range(n_frames)]
-    mask        = KeyMask.load(_CAL_FILE)
+    mask        = KeyMask.load(cal_file)
 
     print(f"\n[{pid} | {model_name}]  {len(note_events)} notes  "
           f"|  {len(frame_times)} frames  |  {video_path.name}")
