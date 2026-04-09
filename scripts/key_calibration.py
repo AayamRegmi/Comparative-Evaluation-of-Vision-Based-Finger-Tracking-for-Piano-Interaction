@@ -363,7 +363,8 @@ class KeyMask:
 
     # -- Persistence --
 
-    def save(self, cal_dir: Path, frame_w: int, frame_h: int) -> Path:
+    def save(self, cal_dir: Path, frame_w: int, frame_h: int,
+             filename: str = "key_centers.json") -> Path:
         cal_dir = Path(cal_dir)
         cal_dir.mkdir(parents=True, exist_ok=True)
         out = {
@@ -383,7 +384,7 @@ class KeyMask:
                 for k in self.keys
             ],
         }
-        path = cal_dir / "key_centers.json"
+        path = cal_dir / filename
         with open(path, "w") as f:
             json.dump(out, f, indent=2)
         return path
@@ -722,14 +723,16 @@ class MaskControlPanel:
 # HUD
 # ---------------------------------------------------------------------------
 
-def _draw_hud(frame: np.ndarray, mask: KeyMask, total_keys: int, show_help: bool) -> None:
+def _draw_hud(frame: np.ndarray, mask: KeyMask, total_keys: int, show_help: bool,
+              flip: bool = False) -> None:
     fh         = frame.shape[0]
     start_name = _midi_to_name(mask.start_midi)
 
+    flip_tag = "  |  FLIP: ON" if flip else "  |  FLIP: off"
     status = (f"Keys: {mask.num_white} white / {total_keys} total  |  "
               f"Start: {start_name} (MIDI {mask.start_midi})  |  "
               f"Key: {mask.wkw}x{mask.wkh} px  |  "
-              f"Pos: ({mask.ox}, {mask.oy})")
+              f"Pos: ({mask.ox}, {mask.oy}){flip_tag}")
     cv2.putText(frame, status, (10, 22),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.52, (240, 240, 240), 1)
 
@@ -743,6 +746,7 @@ def _draw_hud(frame: np.ndarray, mask: KeyMask, total_keys: int, show_help: bool
             "Scroll                add / remove key",
             "[ / ]                 shift start note",
             "- / =                 fine key width",
+            "F                     toggle 180 flip (match record.py)",
             "ENTER or S            save calibration",
             "ESC                   quit without saving",
         ]
@@ -751,7 +755,7 @@ def _draw_hud(frame: np.ndarray, mask: KeyMask, total_keys: int, show_help: bool
             cv2.putText(frame, l, (10, by + i * 20),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.50, (150, 150, 150), 1)
     else:
-        cv2.putText(frame, "H: help   ENTER: save   ESC: quit",
+        cv2.putText(frame, "F: flip   H: help   ENTER: save   ESC: quit",
                     (10, fh - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (150, 150, 150), 1)
 
 
@@ -787,8 +791,13 @@ def run_calibration():
         mask.start_midi += 1
 
     show_help = True
+    flip = False  # match record.py's F-key toggle (cv2.flip code -1: 180° rotation)
 
     def on_mouse(event, x, y, flags, _):
+        # When flip is active the displayed frame is rotated 180°, so mouse coords
+        # must be mapped back to raw frame space before the mask sees them.
+        if flip:
+            x, y = fw - 1 - x, fh - 1 - y
         mask.on_mouse(event, x, y, flags)
 
     cv2.namedWindow(_WIN_NAME, cv2.WINDOW_NORMAL)
@@ -796,6 +805,7 @@ def run_calibration():
     cv2.setMouseCallback(_WIN_NAME, on_mouse)
 
     print("Drag edges / corners to resize, drag interior to move.")
+    print("Press F to toggle 180° flip (match record.py setting).")
     print("Press H for help, ENTER to save.\n")
 
     while cap.isOpened():
@@ -803,11 +813,16 @@ def run_calibration():
         if not ret:
             break
 
+        # Draw mask on raw frame first (coords are always in raw space)
         mask.draw(frame)
         draw_mask_handles(frame, mask)
-        _draw_hud(frame, mask, len(mask.keys), show_help)
 
-        cv2.imshow(_WIN_NAME, frame)
+        # Apply flip AFTER drawing so the display matches what record.py saves
+        display = cv2.flip(frame, -1) if flip else frame
+
+        _draw_hud(display, mask, len(mask.keys), show_help, flip)
+
+        cv2.imshow(_WIN_NAME, display)
         key = cv2.waitKey(20) & 0xFF
 
         if key == 27:
@@ -825,6 +840,10 @@ def run_calibration():
 
         elif key in (ord('h'), ord('H')):
             show_help = not show_help
+
+        elif key in (ord('f'), ord('F')):
+            flip = not flip
+            print(f"Flip: {'ON' if flip else 'off'}")
 
         elif key == ord('['):
             m = mask.start_midi - 1
