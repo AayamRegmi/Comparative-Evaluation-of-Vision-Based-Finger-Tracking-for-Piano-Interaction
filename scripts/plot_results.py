@@ -478,6 +478,276 @@ def plot_finger_heatmap(records, out_dir):
 
 
 # ---------------------------------------------------------------------------
+# Chart 9 — Individual participant report
+# ---------------------------------------------------------------------------
+
+def plot_participant_report(pid, records, out_dir):
+    """
+    One-page performance report for a single participant.
+    Saved to out_dir/reports/{pid}_report.png
+
+    Layout (2 rows × 3 cols):
+      [session info | detection bar | overall stats]
+      [L-hand fingers | R-hand fingers | highlights]
+    """
+    mp_rec = next((r for r in records if r["pid"] == pid and r["model"] == "mediapipe"), None)
+    op_rec = next((r for r in records if r["pid"] == pid and r["model"] == "openpose"), None)
+
+    if mp_rec is None:
+        print(f"  {pid} report: no MediaPipe data — skipping")
+        return
+
+    reports_dir = out_dir / "reports"
+    reports_dir.mkdir(exist_ok=True)
+
+    # ── colours ──────────────────────────────────────────────────────────
+    BG        = "#f7f9fc"
+    PANEL_BG  = "#ffffff"
+    BORDER    = "#dde3ed"
+    TXT       = "#1a1a2e"
+    MUTED     = "#6b7280"
+    C_GREEN   = "#22c55e"
+    C_YELLOW  = "#f59e0b"
+    C_RED     = "#ef4444"
+    C_BLUE    = "#3b82f6"
+    C_GREY    = "#cbd5e1"
+    C_MP      = _MODEL_COLORS["mediapipe"]
+    C_OP      = _MODEL_COLORS["openpose"]
+
+    fig = plt.figure(figsize=(15, 9))
+    fig.patch.set_facecolor(BG)
+
+    gs = fig.add_gridspec(2, 3, hspace=0.5, wspace=0.35,
+                          left=0.05, right=0.97, top=0.88, bottom=0.09)
+
+    ax_info    = fig.add_subplot(gs[0, 0])
+    ax_detect  = fig.add_subplot(gs[0, 1])
+    ax_overall = fig.add_subplot(gs[0, 2])
+    ax_left    = fig.add_subplot(gs[1, 0])
+    ax_right   = fig.add_subplot(gs[1, 1])
+    ax_hi      = fig.add_subplot(gs[1, 2])
+
+    def _style_ax(ax, keep_axes=True):
+        ax.set_facecolor(PANEL_BG)
+        for spine in ax.spines.values():
+            spine.set_color(BORDER)
+        if not keep_axes:
+            ax.axis("off")
+
+    # ── Panel 1 : session metadata ────────────────────────────────────────
+    _style_ax(ax_info, keep_axes=False)
+
+    fitz      = mp_rec.get("fitzpatrick")
+    lux       = mp_rec.get("lux")
+    hand_size = mp_rec.get("hand_size_cm")
+    lux_lbl   = mp_rec.get("lux_label", "Unknown")
+    fitz_lbl  = (f"Type {fitz}  ({_FITZ_LABELS.get(fitz, '?')})"
+                 if fitz else "Not recorded")
+
+    info_rows = [
+        ("Participant",  pid.upper()),
+        ("Skin Type",    fitz_lbl),
+        ("Lighting",     f"{lux_lbl}  ({lux} lux)" if lux is not None else lux_lbl),
+        ("Hand Size",    f"{hand_size} cm" if hand_size else "Not recorded"),
+        ("Notes Played", str(mp_rec.get("notes_total", "?"))),
+    ]
+
+    ax_info.text(0.06, 0.97, "Session Info",
+                 transform=ax_info.transAxes,
+                 fontsize=11, fontweight="bold", color=TXT, va="top")
+    for i, (lbl, val) in enumerate(info_rows):
+        y = 0.83 - i * 0.17
+        ax_info.text(0.06, y, lbl,
+                     transform=ax_info.transAxes,
+                     fontsize=8, color=MUTED, va="top")
+        ax_info.text(0.06, y - 0.07, val,
+                     transform=ax_info.transAxes,
+                     fontsize=10, fontweight="semibold", color=TXT, va="top")
+
+    # ── Panel 2 : detection outcomes ──────────────────────────────────────
+    _style_ax(ax_detect)
+
+    matched  = mp_rec.get("notes_matched", 0) or 0
+    det_fail = mp_rec.get("notes_detection_fail", 0) or 0
+    missed   = mp_rec.get("notes_missed", 0) or 0
+    total    = matched + det_fail + missed
+
+    if total > 0:
+        cats   = ["Matched", "Det. Fail", "Missed"]
+        pcts   = [100 * matched / total, 100 * det_fail / total, 100 * missed / total]
+        raws   = [matched, det_fail, missed]
+        colors = [C_GREEN, C_YELLOW, C_RED]
+        bars   = ax_detect.bar(cats, pcts, color=colors, alpha=0.85,
+                               edgecolor=BORDER, width=0.5)
+        for bar, pct, raw in zip(bars, pcts, raws):
+            ax_detect.text(bar.get_x() + bar.get_width() / 2, pct + 1.5,
+                           f"{pct:.0f}%\n({raw})",
+                           ha="center", va="bottom", fontsize=8, color=TXT)
+        ax_detect.set_ylim(0, 115)
+    else:
+        ax_detect.text(0.5, 0.5, "No data", transform=ax_detect.transAxes,
+                       ha="center", va="center", color=MUTED)
+
+    ax_detect.set_title("Detection Outcomes (MediaPipe)", fontsize=9, color=TXT, pad=6)
+    ax_detect.set_ylabel("% of note events", fontsize=8, color=MUTED)
+    ax_detect.tick_params(colors=TXT, labelsize=8)
+    ax_detect.grid(axis="y", alpha=0.25, color=BORDER)
+
+    # ── Panel 3 : overall stats text ──────────────────────────────────────
+    _style_ax(ax_overall, keep_axes=False)
+
+    mp_mjmpe = mp_rec.get("mjmpe_px")
+    mp_acc   = mp_rec.get("accuracy_pct")
+    mp_dr    = mp_rec.get("detection_rate_pct")
+    op_mjmpe = op_rec.get("mjmpe_px")          if op_rec else None
+    op_dr    = op_rec.get("detection_rate_pct") if op_rec else None
+
+    stat_rows = [
+        ("MediaPipe MJMPE",      f"{mp_mjmpe:.2f} px" if mp_mjmpe else "—",  C_MP),
+        ("MediaPipe Accuracy",   f"{mp_acc:.1f}%"     if mp_acc   else "—",  C_MP),
+        ("MediaPipe Det. Rate",  f"{mp_dr:.1f}%"      if mp_dr    else "—",  C_MP),
+        ("OpenPose MJMPE",       f"{op_mjmpe:.2f} px" if op_mjmpe else "—",  C_OP),
+        ("OpenPose Det. Rate",   f"{op_dr:.1f}%"      if op_dr    else "—",  C_OP),
+    ]
+
+    ax_overall.text(0.06, 0.97, "Overall Results",
+                    transform=ax_overall.transAxes,
+                    fontsize=11, fontweight="bold", color=TXT, va="top")
+    for i, (lbl, val, col) in enumerate(stat_rows):
+        y = 0.83 - i * 0.17
+        ax_overall.text(0.06, y, lbl,
+                        transform=ax_overall.transAxes,
+                        fontsize=8, color=MUTED, va="top")
+        ax_overall.text(0.06, y - 0.07, val,
+                        transform=ax_overall.transAxes,
+                        fontsize=10, fontweight="semibold", color=col, va="top")
+
+    # ── Panels 4 & 5 : per-finger MJMPE L and R ───────────────────────────
+    finger_short = ["Thumb", "Index", "Mid", "Ring", "Pinky"]
+    xf = np.arange(5)
+
+    for ax, side, title in [(ax_left, "L", "Left Hand"),
+                             (ax_right, "R", "Right Hand")]:
+        _style_ax(ax)
+        ph      = mp_rec.get("per_hand", {}).get(side, {})
+        fingers = ph.get("fingers", {})
+
+        mjmpe_vals = []
+        counts     = []
+        for fi in range(5):
+            fd = fingers.get(str(fi))
+            mjmpe_vals.append(fd["mjmpe"] if fd and fd.get("mjmpe") is not None else None)
+            counts.append(fd.get("count", 0) if fd else 0)
+
+        bar_vals   = [v if v is not None else 0 for v in mjmpe_vals]
+        bar_colors = []
+        for v in mjmpe_vals:
+            if v is None:
+                bar_colors.append(C_GREY)
+            elif v <= 4:
+                bar_colors.append(C_GREEN)
+            elif v <= 7:
+                bar_colors.append(C_YELLOW)
+            else:
+                bar_colors.append(C_RED)
+
+        bars = ax.bar(xf, bar_vals, color=bar_colors, alpha=0.88,
+                      edgecolor=BORDER, width=0.6)
+        for bar, v in zip(bars, mjmpe_vals):
+            if v is not None:
+                ax.text(bar.get_x() + bar.get_width() / 2, v + 0.15,
+                        f"{v:.1f}", ha="center", va="bottom", fontsize=8, color=TXT)
+            else:
+                ax.text(bar.get_x() + bar.get_width() / 2, 0.3,
+                        "N/A", ha="center", va="bottom", fontsize=7, color=MUTED)
+
+        hand_mjmpe   = ph.get("mjmpe_px")
+        hand_matched = ph.get("matched", 0)
+        subtitle = f"({hand_matched} notes"
+        if hand_mjmpe:
+            subtitle += f",  avg {hand_mjmpe:.1f} px)"
+        else:
+            subtitle += ")"
+
+        ax.set_title(f"{title}  {subtitle}", fontsize=9, color=TXT, pad=5)
+        ax.set_ylabel("MJMPE (px)", fontsize=8, color=MUTED)
+        ax.set_xticks(xf)
+        ax.set_xticklabels(finger_short, fontsize=8)
+        ax.tick_params(colors=TXT, labelsize=8)
+        ax.grid(axis="y", alpha=0.25, color=BORDER)
+        max_y = max(max(bar_vals) * 1.3, 5)
+        ax.set_ylim(0, max_y)
+
+    # ── Panel 6 : highlights ──────────────────────────────────────────────
+    _style_ax(ax_hi, keep_axes=False)
+
+    # Collect reliable finger values (count >= 5)
+    finger_scores = {}
+    for side in ["L", "R"]:
+        for fi in range(5):
+            fd = (mp_rec.get("per_hand", {}).get(side, {})
+                  .get("fingers", {}).get(str(fi)))
+            if fd and fd.get("mjmpe") is not None and fd.get("count", 0) >= 5:
+                finger_scores[f"{'L' if side == 'L' else 'R'}-{_FINGER_NAMES[fi]}"] = fd["mjmpe"]
+
+    highlights = []
+    if finger_scores:
+        best_k  = min(finger_scores, key=finger_scores.get)
+        worst_k = max(finger_scores, key=finger_scores.get)
+        highlights.append(("Most Accurate Finger",
+                            f"{best_k}  ({finger_scores[best_k]:.2f} px)", C_GREEN))
+        highlights.append(("Least Accurate Finger",
+                            f"{worst_k}  ({finger_scores[worst_k]:.2f} px)", C_RED))
+
+    if mp_dr is not None:
+        if mp_dr >= 90:
+            dr_txt, dr_col = f"Excellent — {mp_dr:.1f}%", C_GREEN
+        elif mp_dr >= 70:
+            dr_txt, dr_col = f"Good — {mp_dr:.1f}%",      C_YELLOW
+        else:
+            dr_txt, dr_col = f"Low — {mp_dr:.1f}%",       C_RED
+        highlights.append(("Detection Rate", dr_txt, dr_col))
+
+    if mp_mjmpe is not None:
+        if mp_mjmpe <= 4:
+            acc_txt, acc_col = f"Great — {mp_mjmpe:.2f} px", C_GREEN
+        elif mp_mjmpe <= 7:
+            acc_txt, acc_col = f"Good — {mp_mjmpe:.2f} px",  C_YELLOW
+        else:
+            acc_txt, acc_col = f"Needs work — {mp_mjmpe:.2f} px", C_RED
+        highlights.append(("Overall Accuracy", acc_txt, acc_col))
+
+    ax_hi.text(0.06, 0.97, "Highlights",
+               transform=ax_hi.transAxes,
+               fontsize=11, fontweight="bold", color=TXT, va="top")
+    for i, (lbl, val, col) in enumerate(highlights):
+        y = 0.83 - i * 0.22
+        ax_hi.text(0.06, y, lbl,
+                   transform=ax_hi.transAxes,
+                   fontsize=8, color=MUTED, va="top")
+        ax_hi.text(0.06, y - 0.08, val,
+                   transform=ax_hi.transAxes,
+                   fontsize=10, fontweight="semibold", color=col, va="top")
+
+    # ── legend for bar colours ────────────────────────────────────────────
+    legend_items = [
+        mpatches.Patch(color=C_GREEN,  label="≤ 4 px  (great)"),
+        mpatches.Patch(color=C_YELLOW, label="4–7 px  (ok)"),
+        mpatches.Patch(color=C_RED,    label="> 7 px  (poor)"),
+        mpatches.Patch(color=C_GREY,   label="No data"),
+    ]
+    fig.legend(handles=legend_items, loc="lower center", ncol=4,
+               facecolor=PANEL_BG, edgecolor=BORDER, fontsize=8,
+               bbox_to_anchor=(0.5, 0.01))
+
+    fig.suptitle(f"Performance Report — {pid.upper()}  ·  MediaPipe Hand Tracking",
+                 fontsize=14, fontweight="bold", color=TXT, y=0.96)
+    fig.patch.set_facecolor(BG)
+
+    _save(fig, reports_dir, f"{pid}_report.png")
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -526,7 +796,14 @@ def main():
     plot_finger_distribution(records, out_dir)
     plot_finger_heatmap(records, out_dir)
 
-    print(f"\nDone — {len(list(out_dir.glob('*.png')))} chart(s) in {out_dir}")
+    print("\nGenerating per-participant reports...")
+    for pid in pids:
+        plot_participant_report(pid, records, out_dir)
+
+    n_group   = len(list(out_dir.glob("*.png")))
+    n_reports = len(list((out_dir / "reports").glob("*.png"))) if (out_dir / "reports").exists() else 0
+    print(f"\nDone — {n_group} group chart(s) in {out_dir}"
+          f"  +  {n_reports} report(s) in {out_dir / 'reports'}")
 
 
 if __name__ == "__main__":
