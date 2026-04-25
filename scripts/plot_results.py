@@ -16,6 +16,8 @@
 #   06_mjmpe_vs_handsize.png        – scatter MJMPE vs hand size cm with regression
 #   07_finger_distribution_<model>.png – box plots of per-finger MJMPE across sessions
 #   08_heatmap_<model>.png          – per-finger MJMPE heatmap across participants
+#   09_detection_fail_by_fitzpatrick.png – detection-fail rate by Fitzpatrick skin type
+#   10_detection_fail_by_lux.png    – detection-fail rate by lighting condition
 
 import argparse
 import json
@@ -748,6 +750,106 @@ def plot_participant_report(pid, records, out_dir):
 
 
 # ---------------------------------------------------------------------------
+# Chart 9 — Detection-fail rate by Fitzpatrick type
+# ---------------------------------------------------------------------------
+
+def plot_detection_fail_by_fitzpatrick(records, out_dir):
+    by_fitz_model = defaultdict(list)
+    for r in records:
+        ft = r.get("fitzpatrick")
+        if ft is None:
+            continue
+        total = ((r.get("notes_matched", 0) or 0) +
+                 (r.get("notes_detection_fail", 0) or 0) +
+                 (r.get("notes_missed", 0) or 0))
+        df = r.get("notes_detection_fail", 0) or 0
+        by_fitz_model[(ft, r["model"])].append(100 * df / total if total else 0)
+
+    all_types = sorted({r.get("fitzpatrick") for r in records if r.get("fitzpatrick")})
+    if not all_types:
+        print("  09: no Fitzpatrick data — skipping")
+        return
+
+    fig, ax = plt.subplots(figsize=(max(7, len(all_types) * 1.6), 5))
+    x     = np.arange(len(all_types))
+    width = 0.35
+
+    for i, model in enumerate(_MODELS):
+        means, errs = [], []
+        for ft in all_types:
+            vals = by_fitz_model.get((ft, model), [])
+            means.append(np.mean(vals) if vals else 0)
+            errs.append(np.std(vals)   if len(vals) > 1 else 0)
+        bars = ax.bar(x + (i - 0.5) * width, means, width, yerr=errs, capsize=4,
+                      label=model.capitalize(),
+                      color=_MODEL_COLORS[model], alpha=0.85, edgecolor="white")
+        for bar, v in zip(bars, means):
+            if v > 0:
+                ax.text(bar.get_x() + bar.get_width() / 2, v + 0.5,
+                        f"{v:.1f}%", ha="center", va="bottom", fontsize=8)
+
+    ax.set_xlabel("Fitzpatrick Type")
+    ax.set_ylabel("Mean Detection-Fail Rate (%)  ±SD")
+    ax.set_title("Detection-Fail Rate by Fitzpatrick Skin Type\n"
+                 "(tip visible but landed outside key polygon)")
+    ax.set_xticks(x)
+    ax.set_xticklabels([f"Type {t}\n({_FITZ_LABELS.get(t, '')})" for t in all_types])
+    ax.legend()
+    ax.grid(axis="y", alpha=0.3)
+    fig.tight_layout()
+    _save(fig, out_dir, "09_detection_fail_by_fitzpatrick.png")
+
+
+# ---------------------------------------------------------------------------
+# Chart 10 — Detection-fail rate by lighting condition
+# ---------------------------------------------------------------------------
+
+def plot_detection_fail_by_lux(records, out_dir):
+    by_lux_model = defaultdict(list)
+    for r in records:
+        total = ((r.get("notes_matched", 0) or 0) +
+                 (r.get("notes_detection_fail", 0) or 0) +
+                 (r.get("notes_missed", 0) or 0))
+        df = r.get("notes_detection_fail", 0) or 0
+        by_lux_model[(r["lux_label"], r["model"])].append(100 * df / total if total else 0)
+
+    present_lux = [l for l in _LUX_ORDER if any(
+        (l, m) in by_lux_model for m in _MODELS)]
+    if not present_lux:
+        print("  10: no lux data — skipping")
+        return
+
+    fig, ax = plt.subplots(figsize=(9, 5))
+    x     = np.arange(len(present_lux))
+    width = 0.35
+
+    for i, model in enumerate(_MODELS):
+        means, errs = [], []
+        for lbl in present_lux:
+            vals = by_lux_model.get((lbl, model), [])
+            means.append(np.mean(vals) if vals else 0)
+            errs.append(np.std(vals)   if len(vals) > 1 else 0)
+        bars = ax.bar(x + (i - 0.5) * width, means, width, yerr=errs, capsize=4,
+                      label=model.capitalize(),
+                      color=_MODEL_COLORS[model], alpha=0.85, edgecolor="white")
+        for bar, v in zip(bars, means):
+            if v > 0:
+                ax.text(bar.get_x() + bar.get_width() / 2, v + 0.5,
+                        f"{v:.1f}%", ha="center", va="bottom", fontsize=8)
+
+    ax.set_xlabel("Lighting condition")
+    ax.set_ylabel("Mean Detection-Fail Rate (%)  ±SD")
+    ax.set_title("Detection-Fail Rate by Lighting Condition\n"
+                 "(tip visible but landed outside key polygon)")
+    ax.set_xticks(x)
+    ax.set_xticklabels(present_lux)
+    ax.legend()
+    ax.grid(axis="y", alpha=0.3)
+    fig.tight_layout()
+    _save(fig, out_dir, "10_detection_fail_by_lux.png")
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -795,6 +897,8 @@ def main():
     plot_mjmpe_vs_handsize(records, out_dir)
     plot_finger_distribution(records, out_dir)
     plot_finger_heatmap(records, out_dir)
+    plot_detection_fail_by_fitzpatrick(records, out_dir)
+    plot_detection_fail_by_lux(records, out_dir)
 
     print("\nGenerating per-participant reports...")
     for pid in pids:
