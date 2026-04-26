@@ -18,6 +18,7 @@
 #   08_heatmap_<model>.png          – per-finger MJMPE heatmap across participants
 #   09_detection_fail_by_fitzpatrick.png – detection-fail rate by Fitzpatrick skin type
 #   10_detection_fail_by_lux.png    – detection-fail rate by lighting condition
+#   11_mjmpe_by_hand.png            – overall MJMPE by hand (Left vs Right), both models
 
 import argparse
 import json
@@ -849,6 +850,55 @@ def plot_detection_fail_by_lux(records, out_dir):
 
 
 # ---------------------------------------------------------------------------
+# Chart 11 — Overall MJMPE by hand (Left vs Right), both models
+# ---------------------------------------------------------------------------
+
+def plot_mjmpe_by_hand(records, out_dir):
+    """
+    Bar chart: MediaPipe Left vs Right hand mean MJMPE.
+    OpenPose excluded — it has no physical handedness identifier.
+    """
+    mp_recs = [r for r in records if r["model"] == "mediapipe"]
+    by_side = defaultdict(list)
+    for r in mp_recs:
+        ph = r.get("per_hand", {})
+        for side in ["L", "R"]:
+            v = ph.get(side, {}).get("mjmpe_px")
+            if v is not None:
+                by_side[side].append(v)
+
+    if not by_side:
+        print("  11: no MediaPipe per-hand data — skipping")
+        return
+
+    sides       = ["L", "R"]
+    side_labels = ["Left Hand", "Right Hand"]
+    means = [np.mean(by_side[s]) if by_side[s] else 0 for s in sides]
+    errs  = [np.std(by_side[s])  if len(by_side[s]) > 1 else 0 for s in sides]
+    ns    = [len(by_side[s]) for s in sides]
+
+    fig, ax = plt.subplots(figsize=(6, 5))
+    x = np.arange(len(sides))
+    bars = ax.bar(x, means, 0.45, yerr=errs, capsize=6,
+                  color=_MODEL_COLORS["mediapipe"], alpha=0.85, edgecolor="white",
+                  error_kw={"linewidth": 1.5, "ecolor": "#444"})
+    for bar, v, e, n in zip(bars, means, errs, ns):
+        if v > 0:
+            ax.text(bar.get_x() + bar.get_width() / 2, v + e + 0.15,
+                    f"{v:.2f} px\n(n={n})", ha="center", va="bottom", fontsize=10)
+
+    ax.set_xlabel("Hand")
+    ax.set_ylabel("Mean MJMPE (px)  ±SD")
+    ax.set_title("MediaPipe — Overall MJMPE by Hand\n(physical handedness)")
+    ax.set_xticks(x)
+    ax.set_xticklabels(side_labels, fontsize=12)
+    ax.grid(axis="y", alpha=0.3)
+    ax.set_ylim(0, max(means) + max(errs) + 1.5)
+    fig.tight_layout()
+    _save(fig, out_dir, "11_mjmpe_by_hand.png")
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -886,7 +936,7 @@ def main():
     pids   = sorted({r["pid"]   for r in records})
     models = sorted({r["model"] for r in records})
     print(f"Loaded {len(records)} result(s) — {len(pids)} participant(s), models: {models}")
-    print(f"Output → {out_dir}\n")
+    print(f"Output -> {out_dir}\n")
 
     plot_model_comparison(records, out_dir)
     plot_per_finger_mjmpe(records, out_dir)
@@ -898,6 +948,7 @@ def main():
     plot_finger_heatmap(records, out_dir)
     plot_detection_fail_by_fitzpatrick(records, out_dir)
     plot_detection_fail_by_lux(records, out_dir)
+    plot_mjmpe_by_hand(records, out_dir)
 
     print("\nGenerating per-participant reports...")
     for pid in pids:
