@@ -19,7 +19,7 @@
 #   09_detection_fail_by_fitzpatrick.png – detection-fail rate by Fitzpatrick skin type
 #   10_detection_fail_by_lux.png    – detection-fail rate by lighting condition
 #   11_mjmpe_by_hand.png            – overall MJMPE by hand (Left vs Right), MediaPipe only
-#   12_match_rate_by_hand.png       – match rate by hand (Left vs Right), MediaPipe only
+#   12_accuracy_by_finger.png       – per-finger accuracy breakdown (within/above threshold), MediaPipe only
 
 import argparse
 import json
@@ -900,57 +900,69 @@ def plot_mjmpe_by_hand(records, out_dir):
 
 
 # ---------------------------------------------------------------------------
-# Chart 12 — Match rate by hand (MediaPipe only)
+# Chart 12 — Per-finger accuracy breakdown (MediaPipe only)
 # ---------------------------------------------------------------------------
 
-def plot_match_rate_by_hand(records, out_dir):
+def plot_accuracy_by_finger(records, out_dir):
     """
-    Bar chart: MediaPipe Left vs Right hand match rate.
-    match_rate = matched / (matched + detection_fail) per hand, per session.
-    OpenPose excluded — it has no physical handedness identifier.
+    Stacked bar chart: for each finger, % of matched events that were accurate
+    (within threshold) vs above threshold. Aggregated across L+R hands and all
+    sessions. MediaPipe only — detection_fail/missed are not tracked per finger.
     """
     mp_recs = [r for r in records if r["model"] == "mediapipe"]
-    by_side = defaultdict(list)
+    if not mp_recs:
+        print("  12: no MediaPipe data — skipping")
+        return
+
+    # Accumulate total accurate and total inaccurate counts per finger
+    accurate   = [0] * 5   # within threshold
+    inaccurate = [0] * 5   # matched but above threshold
+
     for r in mp_recs:
         ph = r.get("per_hand", {})
         for side in ["L", "R"]:
-            h = ph.get(side, {})
-            matched = h.get("matched", 0)
-            fail    = h.get("detection_fail", 0)
-            total   = matched + fail
-            if total > 0:
-                by_side[side].append(matched / total * 100)
+            fingers = ph.get(side, {}).get("fingers", {})
+            for fi in range(5):
+                f = fingers.get(str(fi), {})
+                count   = f.get("count", 0) or 0
+                acc_pct = f.get("accuracy_pct", 0) or 0
+                acc     = round(count * acc_pct / 100)
+                inacc   = count - acc
+                accurate[fi]   += acc
+                inaccurate[fi] += inacc
 
-    if not by_side:
-        print("  12: no MediaPipe per-hand data — skipping")
+    totals = [a + b for a, b in zip(accurate, inaccurate)]
+    if not any(totals):
+        print("  12: no per-finger count data — skipping")
         return
 
-    sides       = ["L", "R"]
-    side_labels = ["Left Hand", "Right Hand"]
-    means = [np.mean(by_side[s]) if by_side[s] else 0 for s in sides]
-    errs  = [np.std(by_side[s])  if len(by_side[s]) > 1 else 0 for s in sides]
-    ns    = [len(by_side[s]) for s in sides]
+    pct_acc   = [100 * a / t if t else 0 for a, t in zip(accurate,   totals)]
+    pct_inacc = [100 * b / t if t else 0 for b, t in zip(inaccurate, totals)]
 
-    fig, ax = plt.subplots(figsize=(6, 5))
-    x = np.arange(len(sides))
-    bars = ax.bar(x, means, 0.45, yerr=errs, capsize=6,
-                  color=_MODEL_COLORS["mediapipe"], alpha=0.85, edgecolor="white",
-                  error_kw={"linewidth": 1.5, "ecolor": "#444"})
-    for bar, v, e, n in zip(bars, means, errs, ns):
-        if v > 0:
-            ax.text(bar.get_x() + bar.get_width() / 2, v + e + 0.8,
-                    f"{v:.1f}%\n(n={n})", ha="center", va="bottom", fontsize=10)
+    x = np.arange(5)
+    fig, ax = plt.subplots(figsize=(8, 5))
 
-    ax.set_xlabel("Hand")
-    ax.set_ylabel("Match Rate (%)  ±SD")
-    ax.set_title("MediaPipe — Match Rate by Hand\n(physical handedness; matched / matched+fail)")
+    bars_acc = ax.bar(x, pct_acc,   label="Within threshold",        color="#4CAF50", alpha=0.85)
+    bars_inacc = ax.bar(x, pct_inacc, bottom=pct_acc,
+                        label="Above threshold (matched)", color="#FF9800", alpha=0.85)
+
+    for i, (pa, pi, t) in enumerate(zip(pct_acc, pct_inacc, totals)):
+        ax.text(i, pa / 2, f"{pa:.1f}%", ha="center", va="center",
+                fontsize=9, fontweight="bold", color="white")
+        if pi > 3:
+            ax.text(i, pa + pi / 2, f"{pi:.1f}%", ha="center", va="center",
+                    fontsize=9, fontweight="bold", color="white")
+        ax.text(i, 101, f"n={t}", ha="center", va="bottom", fontsize=8, color="#555")
+
+    ax.set_ylabel("% of matched events")
+    ax.set_title("MediaPipe — Per-Finger Accuracy Breakdown\n(matched events only; L+R combined)")
     ax.set_xticks(x)
-    ax.set_xticklabels(side_labels, fontsize=12)
-    ax.set_ylim(0, 115)
-    ax.axhline(100, color="#aaa", linewidth=0.8, linestyle="--")
+    ax.set_xticklabels(_FINGER_NAMES, fontsize=11)
+    ax.set_ylim(0, 112)
+    ax.legend(loc="lower right")
     ax.grid(axis="y", alpha=0.3)
     fig.tight_layout()
-    _save(fig, out_dir, "12_match_rate_by_hand.png")
+    _save(fig, out_dir, "12_accuracy_by_finger.png")
 
 
 # ---------------------------------------------------------------------------
@@ -1004,7 +1016,7 @@ def main():
     plot_detection_fail_by_fitzpatrick(records, out_dir)
     plot_detection_fail_by_lux(records, out_dir)
     plot_mjmpe_by_hand(records, out_dir)
-    plot_match_rate_by_hand(records, out_dir)
+    plot_accuracy_by_finger(records, out_dir)
 
     print("\nGenerating per-participant reports...")
     for pid in pids:
