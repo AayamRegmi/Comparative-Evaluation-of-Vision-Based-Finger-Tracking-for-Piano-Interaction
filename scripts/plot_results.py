@@ -8,6 +8,7 @@
 #
 # Output PNGs are written to data/plots/ (or --out).
 # Charts generated:
+#   00_participant_composition.png  – Fitzpatrick, lighting condition, hand size distributions
 #   01_model_comparison_mjmpe.png   – MediaPipe vs OpenPose MJMPE per participant
 #   02_per_finger_mjmpe.png         – per-finger MJMPE (L/R subplots, both models)
 #   03_detection_breakdown.png      – matched / detection-fail / missed proportions
@@ -94,6 +95,103 @@ def _finger_vals_combined(records, finger_idx, key="mjmpe"):
     """Collect per-session stat values for one finger pooling both hands (L+R)."""
     return (_finger_vals(records, "L", finger_idx, key) +
             _finger_vals(records, "R", finger_idx, key))
+
+
+# ---------------------------------------------------------------------------
+# Chart 0 — Participant composition (Fitzpatrick, lighting, hand size)
+# ---------------------------------------------------------------------------
+
+def plot_participant_composition(records, out_dir):
+    """
+    Three-panel summary of participant demographics:
+      Left  — Fitzpatrick skin type counts
+      Middle — Lighting condition counts (Dim / Indoor / Bright)
+      Right  — Hand size distribution (cm histogram)
+    One record per participant (model duplicates removed).
+    """
+    seen = set()
+    participants = []
+    for r in records:
+        if r["pid"] not in seen:
+            seen.add(r["pid"])
+            participants.append(r)
+
+    if not participants:
+        print("  00: no data — skipping")
+        return
+
+    # ── Fitzpatrick counts ───────────────────────────────────────────────────
+    fitz_counts = {}
+    for r in participants:
+        ft = r.get("fitzpatrick")
+        if ft is not None:
+            label = f"Type {_FITZ_LABELS.get(ft, str(ft))}"
+            fitz_counts[label] = fitz_counts.get(label, 0) + 1
+    fitz_labels  = sorted(fitz_counts.keys())
+    fitz_vals    = [fitz_counts[l] for l in fitz_labels]
+
+    # ── Lighting counts ──────────────────────────────────────────────────────
+    lux_counts = {l: 0 for l in _LUX_ORDER}
+    for r in participants:
+        lux_counts[r["lux_label"]] = lux_counts.get(r["lux_label"], 0) + 1
+    lux_labels = [l for l in _LUX_ORDER if lux_counts[l] > 0]
+    lux_vals   = [lux_counts[l] for l in lux_labels]
+
+    # ── Hand sizes ───────────────────────────────────────────────────────────
+    hand_sizes = [r["hand_size_cm"] for r in participants if r.get("hand_size_cm") is not None]
+
+    # ── Plot ─────────────────────────────────────────────────────────────────
+    fig, axes = plt.subplots(1, 3, figsize=(14, 5))
+    fig.suptitle(f"Participant Composition  (n={len(participants)})",
+                 fontsize=14, fontweight="bold", y=1.02)
+
+    BAR_CLR  = "#5C6BC0"
+    EDGE_CLR = "white"
+
+    # Left — Fitzpatrick
+    ax = axes[0]
+    xf = np.arange(len(fitz_labels))
+    bars = ax.bar(xf, fitz_vals, color=BAR_CLR, edgecolor=EDGE_CLR, alpha=0.88)
+    for bar, v in zip(bars, fitz_vals):
+        ax.text(bar.get_x() + bar.get_width() / 2, v + 0.15, str(v),
+                ha="center", va="bottom", fontsize=11, fontweight="bold")
+    ax.set_xticks(xf)
+    ax.set_xticklabels(fitz_labels, fontsize=10)
+    ax.set_ylabel("Number of participants")
+    ax.set_title("Fitzpatrick Skin Type")
+    ax.set_ylim(0, max(fitz_vals) + 2)
+    ax.grid(axis="y", alpha=0.3)
+
+    # Middle — Lighting
+    ax = axes[1]
+    xl = np.arange(len(lux_labels))
+    LUX_COLORS = {"Dim": "#78909C", "Indoor": "#FFA726", "Bright": "#FFEE58"}
+    colors = [LUX_COLORS.get(l, BAR_CLR) for l in lux_labels]
+    bars = ax.bar(xl, lux_vals, color=colors, edgecolor=EDGE_CLR, alpha=0.88)
+    for bar, v in zip(bars, lux_vals):
+        ax.text(bar.get_x() + bar.get_width() / 2, v + 0.15, str(v),
+                ha="center", va="bottom", fontsize=11, fontweight="bold")
+    ax.set_xticks(xl)
+    ax.set_xticklabels(lux_labels, fontsize=10)
+    ax.set_ylabel("Number of participants")
+    ax.set_title("Lighting Condition")
+    ax.set_ylim(0, max(lux_vals) + 2)
+    ax.grid(axis="y", alpha=0.3)
+
+    # Right — Hand size histogram
+    ax = axes[2]
+    ax.hist(hand_sizes, bins=8, color=BAR_CLR, edgecolor=EDGE_CLR, alpha=0.88)
+    ax.set_xlabel("Hand size (cm)")
+    ax.set_ylabel("Number of participants")
+    ax.set_title("Hand Size Distribution")
+    ax.grid(axis="y", alpha=0.3)
+    mean_hs = np.mean(hand_sizes)
+    ax.axvline(mean_hs, color="#E53935", linewidth=1.5, linestyle="--",
+               label=f"Mean: {mean_hs:.1f} cm")
+    ax.legend(fontsize=9)
+
+    fig.tight_layout()
+    _save(fig, out_dir, "00_participant_composition.png")
 
 
 # ---------------------------------------------------------------------------
@@ -1071,6 +1169,7 @@ def main():
     print(f"Loaded {len(records)} result(s) — {len(pids)} participant(s), models: {models}")
     print(f"Output -> {out_dir}\n")
 
+    plot_participant_composition(records, out_dir)
     plot_model_comparison(records, out_dir)
     plot_per_finger_mjmpe(records, out_dir)
     plot_detection_breakdown(records, out_dir)
