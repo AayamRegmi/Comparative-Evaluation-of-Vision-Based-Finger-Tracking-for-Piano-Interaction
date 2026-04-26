@@ -20,6 +20,7 @@
 #   10_detection_fail_by_lux.png    – detection-fail rate by lighting condition
 #   11_mjmpe_by_hand.png            – overall MJMPE by hand (Left vs Right), MediaPipe only
 #   12_accuracy_by_finger.png       – per-finger accuracy breakdown (within/above threshold), MediaPipe only
+#   13_accuracy_by_finger_openpose.png – same breakdown for OpenPose
 
 import argparse
 import json
@@ -966,6 +967,71 @@ def plot_accuracy_by_finger(records, out_dir):
 
 
 # ---------------------------------------------------------------------------
+# Chart 13 — Per-finger accuracy breakdown (OpenPose only)
+# ---------------------------------------------------------------------------
+
+def plot_accuracy_by_finger_openpose(records, out_dir):
+    """
+    Stacked bar chart: per-finger accuracy breakdown for OpenPose.
+    Same logic as chart 12 but for OpenPose. Low sample counts expected
+    given OpenPose's ~8-9% overall detection rate.
+    """
+    op_recs = [r for r in records if r["model"] == "openpose"]
+    if not op_recs:
+        print("  13: no OpenPose data — skipping")
+        return
+
+    accurate   = [0] * 5
+    inaccurate = [0] * 5
+
+    for r in op_recs:
+        ph = r.get("per_hand", {})
+        for side in ["L", "R"]:
+            fingers = ph.get(side, {}).get("fingers", {})
+            for fi in range(5):
+                f = fingers.get(str(fi), {})
+                count   = f.get("count", 0) or 0
+                acc_pct = f.get("accuracy_pct", 0) or 0
+                acc     = round(count * acc_pct / 100)
+                inacc   = count - acc
+                accurate[fi]   += acc
+                inaccurate[fi] += inacc
+
+    totals = [a + b for a, b in zip(accurate, inaccurate)]
+    if not any(totals):
+        print("  13: no per-finger count data — skipping")
+        return
+
+    pct_acc   = [100 * a / t if t else 0 for a, t in zip(accurate,   totals)]
+    pct_inacc = [100 * b / t if t else 0 for b, t in zip(inaccurate, totals)]
+
+    x = np.arange(5)
+    fig, ax = plt.subplots(figsize=(8, 5))
+
+    ax.bar(x, pct_acc,   label="Within threshold",          color="#4CAF50", alpha=0.85)
+    ax.bar(x, pct_inacc, bottom=pct_acc,
+           label="Above threshold (matched)", color="#FF9800", alpha=0.85)
+
+    for i, (pa, pi, t) in enumerate(zip(pct_acc, pct_inacc, totals)):
+        ax.text(i, pa / 2, f"{pa:.1f}%", ha="center", va="center",
+                fontsize=9, fontweight="bold", color="white")
+        if pi > 3:
+            ax.text(i, pa + pi / 2, f"{pi:.1f}%", ha="center", va="center",
+                    fontsize=9, fontweight="bold", color="white")
+        ax.text(i, 101, f"n={t}", ha="center", va="bottom", fontsize=8, color="#555")
+
+    ax.set_ylabel("% of matched events")
+    ax.set_title("OpenPose — Per-Finger Accuracy Breakdown\n(matched events only; L+R combined; low n — interpret with caution)")
+    ax.set_xticks(x)
+    ax.set_xticklabels(_FINGER_NAMES, fontsize=11)
+    ax.set_ylim(0, 112)
+    ax.legend(loc="lower right")
+    ax.grid(axis="y", alpha=0.3)
+    fig.tight_layout()
+    _save(fig, out_dir, "13_accuracy_by_finger_openpose.png")
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -1017,6 +1083,7 @@ def main():
     plot_detection_fail_by_lux(records, out_dir)
     plot_mjmpe_by_hand(records, out_dir)
     plot_accuracy_by_finger(records, out_dir)
+    plot_accuracy_by_finger_openpose(records, out_dir)
 
     print("\nGenerating per-participant reports...")
     for pid in pids:
