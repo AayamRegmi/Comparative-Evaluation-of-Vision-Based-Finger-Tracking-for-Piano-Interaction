@@ -98,39 +98,38 @@ def _finger_vals_combined(records, finger_idx, key="mjmpe"):
 # ---------------------------------------------------------------------------
 
 def plot_model_comparison(records, out_dir):
-    by_pid = defaultdict(dict)
+    by_model = defaultdict(list)
     for r in records:
         if r.get("mjmpe_px") is not None:
-            by_pid[r["pid"]][r["model"]] = r["mjmpe_px"]
+            by_model[r["model"]].append(r["mjmpe_px"])
 
-    pids = sorted(by_pid.keys())
-    if not pids:
+    models = [m for m in _MODELS if m in by_model]
+    if not models:
         print("  01: no data — skipping")
         return
 
-    x     = np.arange(len(pids))
-    width = 0.35
-    fig, ax = plt.subplots(figsize=(max(8, len(pids) * 1.4), 5))
+    means = [np.mean(by_model[m]) for m in models]
+    sds   = [np.std(by_model[m])  for m in models]
+    ns    = [len(by_model[m])     for m in models]
 
-    for i, model in enumerate(_MODELS):
-        vals  = [by_pid[p].get(model) for p in pids]
-        valid = [v is not None for v in vals]
-        plot  = [v if v is not None else 0 for v in vals]
-        bars  = ax.bar(x + (i - 0.5) * width, plot, width,
-                       label=model.capitalize(),
-                       color=_MODEL_COLORS[model], alpha=0.85, edgecolor="white")
-        for bar, v, ok in zip(bars, plot, valid):
-            if ok and v > 0:
-                ax.text(bar.get_x() + bar.get_width() / 2, v + 0.2,
-                        f"{v:.1f}", ha="center", va="bottom", fontsize=8)
+    fig, ax = plt.subplots(figsize=(6, 5))
+    x = np.arange(len(models))
 
-    ax.set_xlabel("Participant")
-    ax.set_ylabel("MJMPE (px)")
-    ax.set_title("MediaPipe vs OpenPose — Overall MJMPE per Participant")
+    bars = ax.bar(x, means, 0.45, yerr=sds, capsize=6,
+                  color=[_MODEL_COLORS[m] for m in models],
+                  alpha=0.85, edgecolor="white",
+                  error_kw={"linewidth": 1.5, "ecolor": "#444"})
+
+    for bar, mean, sd, n in zip(bars, means, sds, ns):
+        ax.text(bar.get_x() + bar.get_width() / 2, mean + sd + 0.15,
+                f"{mean:.2f} px\n(n={n})", ha="center", va="bottom", fontsize=10)
+
+    ax.set_ylabel("Mean MJMPE (px)  ±SD")
+    ax.set_title("Overall MJMPE by Model")
     ax.set_xticks(x)
-    ax.set_xticklabels(pids, rotation=45, ha="right")
-    ax.legend()
+    ax.set_xticklabels([m.capitalize() for m in models], fontsize=12)
     ax.grid(axis="y", alpha=0.3)
+    ax.set_ylim(0, max(means) + max(sds) + 1.5)
     fig.tight_layout()
     _save(fig, out_dir, "01_model_comparison_mjmpe.png")
 
