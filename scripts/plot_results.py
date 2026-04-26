@@ -1021,7 +1021,7 @@ def plot_accuracy_by_finger_openpose(records, out_dir):
         ax.text(i, 101, f"n={t}", ha="center", va="bottom", fontsize=8, color="#555")
 
     ax.set_ylabel("% of matched events")
-    ax.set_title("OpenPose — Per-Finger Accuracy Breakdown\n(matched events only; L+R combined; low n — interpret with caution)")
+    ax.set_title("OpenPose — Per-Finger Accuracy Breakdown\n(matched events only; L+R combined)")
     ax.set_xticks(x)
     ax.set_xticklabels(_FINGER_NAMES, fontsize=11)
     ax.set_ylim(0, 112)
