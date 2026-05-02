@@ -218,8 +218,8 @@ def _draw_input_box(frame, label, value, unit, y, active):
                 cv2.FONT_HERSHEY_SIMPLEX, 0.65, (200, 200, 200), 1)
 
     box_y = y + 8
-    cv2.rectangle(frame, (x, box_y), (x + w, box_y + 40), (40, 40, 40), -1)
-    cv2.rectangle(frame, (x, box_y), (x + w, box_y + 40), color, 2)
+    cv2.rectangle(frame, (x, box_y), (x + w, box_y + 40), (40, 40, 40), -1, cv2.LINE_AA)
+    cv2.rectangle(frame, (x, box_y), (x + w, box_y + 40), color, 2, cv2.LINE_AA)
 
     cursor = "|" if active else ""
     cv2.putText(frame, f"{value}{cursor}  {unit}", (x + 8, box_y + 28),
@@ -282,7 +282,7 @@ def _run_setup_screen(cap, midi_ports: list, midi_port_idx: int,
                         _last_note = _midi_note_name(_msg.note) + "  (MIDI " + str(_msg.note) + ")"
 
         overlay = frame.copy()
-        cv2.rectangle(overlay, (0, 0), (frame.shape[1], frame.shape[0]), (0, 0, 0), -1)
+        cv2.rectangle(overlay, (0, 0), (frame.shape[1], frame.shape[0]), (0, 0, 0), -1, cv2.LINE_AA)
         cv2.addWeighted(overlay, 0.55, frame, 0.45, 0, frame)
 
         cv2.putText(frame, "SESSION SETUP", (80, 80),
@@ -311,8 +311,8 @@ def _run_setup_screen(cap, midi_ports: list, midi_port_idx: int,
         cv2.putText(frame, "Fitzpatrick Type  (optional, 1-6 or blank = auto)", (fitz_rx, 160),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.55, (200, 200, 200), 1)
         fitz_bx = 168
-        cv2.rectangle(frame, (fitz_rx, fitz_bx), (fitz_rx + 360, fitz_bx + 40), (40, 40, 40), -1)
-        cv2.rectangle(frame, (fitz_rx, fitz_bx), (fitz_rx + 360, fitz_bx + 40), fitz_col, 2)
+        cv2.rectangle(frame, (fitz_rx, fitz_bx), (fitz_rx + 360, fitz_bx + 40), (40, 40, 40), -1, cv2.LINE_AA)
+        cv2.rectangle(frame, (fitz_rx, fitz_bx), (fitz_rx + 360, fitz_bx + 40), fitz_col, 2, cv2.LINE_AA)
         fitz_cursor = "|" if active == 2 else ""
         cv2.putText(frame, f"{fields[2]['value']}{fitz_cursor}  {fields[2]['unit']}",
                     (fitz_rx + 8, fitz_bx + 28), cv2.FONT_HERSHEY_SIMPLEX, 0.8, fitz_col, 2)
@@ -341,8 +341,8 @@ def _run_setup_screen(cap, midi_ports: list, midi_port_idx: int,
             port_label = "No MIDI device found"
             midi_col   = MIDI_COLOR_NONE
             cycle_hint = "  (connect piano via USB and restart)"
-        cv2.rectangle(frame, (80, midi_box_y), (500, midi_box_y + 40), (40, 40, 40), -1)
-        cv2.rectangle(frame, (80, midi_box_y), (500, midi_box_y + 40), midi_col, 2)
+        cv2.rectangle(frame, (80, midi_box_y), (500, midi_box_y + 40), (40, 40, 40), -1, cv2.LINE_AA)
+        cv2.rectangle(frame, (80, midi_box_y), (500, midi_box_y + 40), midi_col, 2, cv2.LINE_AA)
         cv2.putText(frame, port_label, (88, midi_box_y + 28),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.65, midi_col, 2)
         cv2.putText(frame, cycle_hint, (80, midi_box_y + 58),
@@ -360,8 +360,8 @@ def _run_setup_screen(cap, midi_ports: list, midi_port_idx: int,
         cam_label = f"Camera {cam_idx}  ({cam_w} x {cam_h})"
         cam_hint2 = (f"  c/C to cycle  ({avail_cams.index(cam_idx) + 1}/{len(avail_cams)})"
                      if len(avail_cams) > 1 else "  (only camera detected)")
-        cv2.rectangle(frame, (80, cam_box_y), (500, cam_box_y + 40), (40, 40, 40), -1)
-        cv2.rectangle(frame, (80, cam_box_y), (500, cam_box_y + 40), (80, 220, 80), 2)
+        cv2.rectangle(frame, (80, cam_box_y), (500, cam_box_y + 40), (40, 40, 40), -1, cv2.LINE_AA)
+        cv2.rectangle(frame, (80, cam_box_y), (500, cam_box_y + 40), (80, 220, 80), 2, cv2.LINE_AA)
         cv2.putText(frame, cam_label, (88, cam_box_y + 28),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.65, (80, 220, 80), 2)
         cv2.putText(frame, cam_hint2, (80, cam_box_y + 58),
@@ -371,7 +371,7 @@ def _run_setup_screen(cap, midi_ports: list, midi_port_idx: int,
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (80, 220, 80) if flip_y else (130, 130, 130), 1)
 
         fh_s, fw_s = frame.shape[:2]
-        cv2.rectangle(frame, (0, fh_s - 70), (fw_s, fh_s), (20, 20, 20), -1)
+        cv2.rectangle(frame, (0, fh_s - 70), (fw_s, fh_s), (20, 20, 20), -1, cv2.LINE_AA)
         cv2.putText(frame,
                     "TAB: switch field    ENTER: confirm    [/]: MIDI port    c/C: camera    f: flip    ESC: quit",
                     (80, fh_s - 44),
@@ -698,7 +698,7 @@ def run_record():
             # REC indicator (top-left, below stats if visible)
             rec_y = 100 if show_stats else 35
             if recording:
-                cv2.circle(display, (28, rec_y - 7), 12, (0, 0, 220), -1)
+                cv2.circle(display, (28, rec_y - 7), 12, (0, 0, 220), -1, cv2.LINE_AA)
                 cv2.putText(display, f"REC  p{pid:03d}", (46, rec_y),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 220), 2)
     
@@ -707,8 +707,8 @@ def run_record():
                 fh, fw2 = display.shape[:2]
                 bx, bw, bh = fw2 // 2 - 280, 560, 90
                 by = fh // 2 - 45
-                cv2.rectangle(display, (bx, by), (bx + bw, by + bh), (30, 30, 30), -1)
-                cv2.rectangle(display, (bx, by), (bx + bw, by + bh), config.TEXT_COLOR_FITZPATRICK, 2)
+                cv2.rectangle(display, (bx, by), (bx + bw, by + bh), (30, 30, 30), -1, cv2.LINE_AA)
+                cv2.rectangle(display, (bx, by), (bx + bw, by + bh), config.TEXT_COLOR_FITZPATRICK, 2, cv2.LINE_AA)
                 cv2.putText(display, "FITZPATRICK RETEST",
                             (bx + 20, by + 32), cv2.FONT_HERSHEY_SIMPLEX,
                             0.85, config.TEXT_COLOR_FITZPATRICK, 2)
@@ -718,7 +718,7 @@ def run_record():
     
             # Key hint bar (bottom) — dark strip so text is always readable
             fh_d, fw_d = display.shape[:2]
-            cv2.rectangle(display, (0, fh_d - 30), (fw_d, fh_d), (20, 20, 20), -1)
+            cv2.rectangle(display, (0, fh_d - 30), (fw_d, fh_d), (20, 20, 20), -1, cv2.LINE_AA)
             hint_y    = fh_d - 9
             st_state   = "ON" if show_stats else "OFF"
             rec_state  = "STOP" if recording else "REC"

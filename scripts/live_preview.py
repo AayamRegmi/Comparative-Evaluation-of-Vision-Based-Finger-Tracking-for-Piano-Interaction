@@ -139,7 +139,7 @@ def _run_test_setup(cap, midi_ports: list, midi_port_idx: int,
                         _last_note = _midi_note_name(_msg.note) + "  (MIDI " + str(_msg.note) + ")"
 
         ov = frame.copy()
-        cv2.rectangle(ov, (0, 0), (frame.shape[1], frame.shape[0]), (0, 0, 0), -1)
+        cv2.rectangle(ov, (0, 0), (frame.shape[1], frame.shape[0]), (0, 0, 0), -1, cv2.LINE_AA)
         cv2.addWeighted(ov, 0.55, frame, 0.45, 0, frame)
 
         cv2.putText(frame, "MJMPE TEST  \u2013  Session Setup", (80, 80),
@@ -160,8 +160,8 @@ def _run_test_setup(cap, midi_ports: list, midi_port_idx: int,
             port_label = "No MIDI device found"
             midi_col   = MIDI_NONE
             hint       = "  (connect piano via USB and restart)"
-        cv2.rectangle(frame, (80, midi_box_y), (500, midi_box_y + 40), (40, 40, 40), -1)
-        cv2.rectangle(frame, (80, midi_box_y), (500, midi_box_y + 40), midi_col, 2)
+        cv2.rectangle(frame, (80, midi_box_y), (500, midi_box_y + 40), (40, 40, 40), -1, cv2.LINE_AA)
+        cv2.rectangle(frame, (80, midi_box_y), (500, midi_box_y + 40), midi_col, 2, cv2.LINE_AA)
         cv2.putText(frame, port_label, (88, midi_box_y + 28),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.65, midi_col, 2)
         cv2.putText(frame, hint, (80, midi_box_y + 58),
@@ -179,8 +179,8 @@ def _run_test_setup(cap, midi_ports: list, midi_port_idx: int,
         cam_label = f"Camera {cam_idx}  ({cam_w} x {cam_h})"
         cam_hint  = (f"  c/C to cycle  ({avail_cams.index(cam_idx) + 1}/{len(avail_cams)})"
                      if len(avail_cams) > 1 else "  (only camera detected)")
-        cv2.rectangle(frame, (80, cam_box_y), (500, cam_box_y + 40), (40, 40, 40), -1)
-        cv2.rectangle(frame, (80, cam_box_y), (500, cam_box_y + 40), CAM_COL, 2)
+        cv2.rectangle(frame, (80, cam_box_y), (500, cam_box_y + 40), (40, 40, 40), -1, cv2.LINE_AA)
+        cv2.rectangle(frame, (80, cam_box_y), (500, cam_box_y + 40), CAM_COL, 2, cv2.LINE_AA)
         cv2.putText(frame, cam_label, (88, cam_box_y + 28),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.65, CAM_COL, 2)
         cv2.putText(frame, cam_hint, (80, cam_box_y + 58),
@@ -190,7 +190,7 @@ def _run_test_setup(cap, midi_ports: list, midi_port_idx: int,
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (80, 220, 80) if flip_y else (130, 130, 130), 1)
 
         fh_s, fw_s = frame.shape[:2]
-        cv2.rectangle(frame, (0, fh_s - 44), (fw_s, fh_s), (20, 20, 20), -1)
+        cv2.rectangle(frame, (0, fh_s - 44), (fw_s, fh_s), (20, 20, 20), -1, cv2.LINE_AA)
         cv2.putText(frame,
                     "ENTER: start test    [/]: MIDI port    c/C: camera    f: flip    ESC: quit",
                     (80, fh_s - 14),
@@ -318,8 +318,8 @@ def _draw_hand_overlay(display: np.ndarray, multi_hand_lms, fw: int, fh: int,
         for lm_idx in _FINGERTIPS:
             lm = hand_lms.landmark[lm_idx]
             px, py = int(lm.x * fw), int(lm.y * fh)
-            cv2.circle(display, (px, py), 7, (255, 255, 0), -1)   # cyan fill
-            cv2.circle(display, (px, py), 7, (0,   0,   0), 1)    # black outline
+            cv2.circle(display, (px, py), 7, (255, 255, 0), -1, cv2.LINE_AA)   # cyan fill
+            cv2.circle(display, (px, py), 7, (0,   0,   0), 1, cv2.LINE_AA)    # black outline
 
         # L / R label at wrist (landmark 0)
         label  = _resolve_hand_label(hand_lms, multi_handedness, i, fw)
@@ -364,8 +364,8 @@ def _show_results(last_frame: np.ndarray, errors: list, missed: int,
     px       = max(0, (fw - pw) // 2)
     py       = max(0, (fh - ph) // 2)
     panel    = display[py:py+ph, px:px+pw].copy()
-    cv2.rectangle(panel, (0, 0), (pw, ph), (15, 15, 15), -1)
-    cv2.rectangle(panel, (0, 0), (pw, ph), (80, 80, 80), 2)
+    cv2.rectangle(panel, (0, 0), (pw, ph), (15, 15, 15), -1, cv2.LINE_AA)
+    cv2.rectangle(panel, (0, 0), (pw, ph), (80, 80, 80), 2, cv2.LINE_AA)
     cv2.addWeighted(panel, 0.92, display[py:py+ph, px:px+pw], 0.08, 0,
                     display[py:py+ph, px:px+pw])
     display[py:py+ph, px:px+pw] = panel
@@ -373,9 +373,9 @@ def _show_results(last_frame: np.ndarray, errors: list, missed: int,
     # Draw all cv2 lines FIRST (before PIL conversion)
     lx = px + 20
     rx = px + 368
-    cv2.line(display, (px + 20, py + 52),  (px + pw - 20, py + 52),  (60, 60, 60), 1)   # title divider
-    cv2.line(display, (px + 20, py + 278), (px + pw - 20, py + 278), (55, 55, 55), 1)   # section divider
-    cv2.line(display, (px + 348, py + 282), (px + 348, py + ph - 28), (55, 55, 55), 1)  # column divider
+    cv2.line(display, (px + 20, py + 52),  (px + pw - 20, py + 52),  (60, 60, 60), 1, cv2.LINE_AA)   # title divider
+    cv2.line(display, (px + 20, py + 278), (px + pw - 20, py + 278), (55, 55, 55), 1, cv2.LINE_AA)   # section divider
+    cv2.line(display, (px + 348, py + 282), (px + 348, py + ph - 28), (55, 55, 55), 1, cv2.LINE_AA)  # column divider
 
     # Convert to PIL once for all text rendering
     pil_img = Image.fromarray(cv2.cvtColor(display, cv2.COLOR_BGR2RGB))
@@ -622,13 +622,17 @@ def run_test():
                         per_finger[hand][best_slot].append(h_err)
                         if h_err < mask.wkw * config.ACCURACY_THRESHOLD_RATIO:
                             accurate[hand] += 1
+                        y_top = int(key_poly[:, 1].min()) if key_poly is not None else cy - 30
+                        y_bot = int(key_poly[:, 1].max()) if key_poly is not None else cy + 30
                         flashes.append([_FLASH_FRAMES, cx, cy,
-                                        best_tx, best_ty, h_err, 'match'])
+                                        best_tx, best_ty, h_err, 'match', y_top, y_bot])
                     else:
                         # Detection fail: model missed the key polygon entirely
                         detection_fail[kb_hand] += 1
+                        y_top = int(key_poly[:, 1].min()) if key_poly is not None else cy - 30
+                        y_bot = int(key_poly[:, 1].max()) if key_poly is not None else cy + 30
                         flashes.append([_FLASH_FRAMES, cx, cy,
-                                        cx, cy, 0, 'fail'])
+                                        cx, cy, 0, 'fail', y_top, y_bot])
 
         total_latency_ms = (time.perf_counter() - loop_start) * 1000
         stats.update(loop_start, inference_ms, total_latency_ms)
@@ -646,22 +650,25 @@ def run_test():
         # Flash: key centre circle + error line
         next_flashes = []
         for flash in flashes:
-            remaining, cx, cy, tx, ty, dist, kind = flash
+            remaining, cx, cy, tx, ty, dist, kind, y_top, y_bot = flash
             if kind == 'match':
                 # Colour by distance: green < 20px, yellow < 40px, red ≥ 40px
                 col = ((0, 200, 80) if dist < 20 else
                        (0, 220, 220) if dist < 40 else (60, 80, 255))
-                cv2.circle(display, (cx, cy), 14, col, 3)
-                cv2.line(display,   (tx, ty), (cx, cy), col, 2)
-                cv2.circle(display, (tx, ty), 9, col, -1)
+                # Vertical line spanning full key height — shows horizontal-only
+                # error target: any Y within the key is valid, only X matters
+                cv2.line(display, (cx, y_top), (cx, y_bot), col, 2, cv2.LINE_AA)
+                # Horizontal error line at fingertip Y — mirrors E(x)=|tip_x - key_cx|
+                cv2.line(display, (tx, ty), (cx, ty), col, 2, cv2.LINE_AA)
+                cv2.circle(display, (tx, ty), 9, col, -1, cv2.LINE_AA)
             else:
-                # Detection fail: magenta outline — no landmark landed on key
-                cv2.circle(display, (cx, cy), 16, (200, 0, 200), 3)
-                cv2.line(display, (cx - 10, cy), (cx + 10, cy), (200, 0, 200), 2)
-                cv2.line(display, (cx, cy - 10), (cx, cy + 10), (200, 0, 200), 2)
+                # Detection fail: magenta vertical line + crosshair at center
+                cv2.line(display, (cx, y_top), (cx, y_bot), (200, 0, 200), 2, cv2.LINE_AA)
+                cv2.line(display, (cx - 10, cy), (cx + 10, cy), (200, 0, 200), 2, cv2.LINE_AA)
+                cv2.line(display, (cx, cy - 10), (cx, cy + 10), (200, 0, 200), 2, cv2.LINE_AA)
             remaining -= 1
             if remaining > 0:
-                next_flashes.append([remaining, cx, cy, tx, ty, dist, kind])
+                next_flashes.append([remaining, cx, cy, tx, ty, dist, kind, y_top, y_bot])
         flashes = next_flashes
 
         # Stats overlay (top-left)
@@ -721,7 +728,7 @@ def run_test():
 
         # Hint bar — dark strip so text is always readable
         fh_d, fw_d = display.shape[:2]
-        cv2.rectangle(display, (0, fh_d - 30), (fw_d, fh_d), (20, 20, 20), -1)
+        cv2.rectangle(display, (0, fh_d - 30), (fw_d, fh_d), (20, 20, 20), -1, cv2.LINE_AA)
         hint_y   = fh_d - 9
         mask_lbl = f"M:mask({'ON' if show_mask else 'OFF'})"
         ctrl_lbl = f"N:ctrl({'ON' if panel.visible else 'OFF'})"

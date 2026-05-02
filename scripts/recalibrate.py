@@ -178,7 +178,7 @@ def _run_picker() -> str | None:
         # Title
         cv2.putText(canvas, "Select participant to calibrate",
                     (_PAD, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (220, 220, 220), 1)
-        cv2.line(canvas, (_PAD, 36), (_PICK_W - _PAD, 36), (80, 80, 80), 1)
+        cv2.line(canvas, (_PAD, 36), (_PICK_W - _PAD, 36), (80, 80, 80), 1, cv2.LINE_AA)
 
         visible = sessions[scroll: scroll + _PICK_ROWS]
         for i, sd in enumerate(visible):
@@ -193,7 +193,7 @@ def _run_picker() -> str | None:
 
             # Status dot
             dot_col = (50, 200, 80) if cal_done else (60, 130, 220)
-            cv2.circle(canvas, (_PAD + 14, gy + _ROW_H // 2), 6, dot_col, -1)
+            cv2.circle(canvas, (_PAD + 14, gy + _ROW_H // 2), 6, dot_col, -1, cv2.LINE_AA)
 
             # PID label
             cv2.putText(canvas, pid.upper(), (_PAD + 28, gy + 24),
@@ -274,7 +274,7 @@ def _draw_text(img, text, x, y, scale=0.50, color=(220, 220, 220), thickness=1):
 def _draw_editor_hud(canvas, mask, total_frames, cur_frame, playing, fw, fh,
                      show_help, active_notes=None):
     # Dark top bar — status line
-    cv2.rectangle(canvas, (0, 0), (fw, _BAR_H), (18, 18, 18), -1)
+    cv2.rectangle(canvas, (0, 0), (fw, _BAR_H), (18, 18, 18), -1, cv2.LINE_AA)
     status = (f"Keys: {mask.num_white} white  |  "
               f"Key: {mask.wkw}x{mask.wkh}px  |  "
               f"Pos: ({mask.ox},{mask.oy})  |  "
@@ -293,7 +293,7 @@ def _draw_editor_hud(canvas, mask, total_frames, cur_frame, playing, fw, fh,
 
     # Dark bottom bar — controls
     bar_y = fh - _BAR_H
-    cv2.rectangle(canvas, (0, bar_y), (fw, fh), (18, 18, 18), -1)
+    cv2.rectangle(canvas, (0, bar_y), (fw, fh), (18, 18, 18), -1, cv2.LINE_AA)
 
     if show_help:
         controls = ("SPACE:play/pause   LEFT/RIGHT:step   ,:‑10   .:+10   "
@@ -306,8 +306,8 @@ def _draw_editor_hud(canvas, mask, total_frames, cur_frame, playing, fw, fh,
     # Progress bar just above the bottom bar
     if total_frames > 1:
         filled = int(fw * cur_frame / (total_frames - 1))
-        cv2.rectangle(canvas, (0, bar_y - 5), (fw, bar_y - 1), (50, 50, 50), -1)
-        cv2.rectangle(canvas, (0, bar_y - 5), (filled, bar_y - 1), (0, 200, 80), -1)
+        cv2.rectangle(canvas, (0, bar_y - 5), (fw, bar_y - 1), (50, 50, 50), -1, cv2.LINE_AA)
+        cv2.rectangle(canvas, (0, bar_y - 5), (filled, bar_y - 1), (0, 200, 80), -1, cv2.LINE_AA)
 
 
 # ---------------------------------------------------------------------------
@@ -409,8 +409,8 @@ def _run_editor(pid: str) -> bool:
             for k in mask.keys:
                 if k["midi_note"] == note:
                     cx, cy = int(k["center"][0]), int(k["center"][1])
-                    cv2.circle(raw, (cx, cy), 10, (0, 255, 255), 3)
-                    cv2.circle(raw, (cx, cy),  4, (0, 255, 255), -1)
+                    cv2.circle(raw, (cx, cy), 10, (0, 255, 255), 3, cv2.LINE_AA)
+                    cv2.circle(raw, (cx, cy),  4, (0, 255, 255), -1, cv2.LINE_AA)
 
         # Compose canvas: top bar | video | progress + bottom bar
         canvas = np.zeros((canvas_h, fw, 3), dtype=np.uint8)

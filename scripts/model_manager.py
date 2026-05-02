@@ -219,7 +219,7 @@ class OpenPoseHandModel(PoseModel):
             if result[a] is not None and result[b] is not None:
                 ax, ay, _ = result[a]
                 bx, by, _ = result[b]
-                cv2.line(frame, (ax, ay), (bx, by), (0, 255, 255), 2)
+                cv2.line(frame, (ax, ay), (bx, by), (0, 255, 255), 2, cv2.LINE_AA)
 
         for i, kp in enumerate(result):
             if kp is not None:
@@ -227,7 +227,7 @@ class OpenPoseHandModel(PoseModel):
                 tip    = i in _OPENPOSE_HAND_TIPS
                 colour = (0, 0, 255) if tip else (0, 255, 0)
                 radius = 8 if tip else 5
-                cv2.circle(frame, (x, y), radius, colour, -1)
+                cv2.circle(frame, (x, y), radius, colour, -1, cv2.LINE_AA)
 
         return frame
 

@@ -231,7 +231,7 @@ class KeyMask:
             if k['key_type'] == 'white':
                 pts = _warp_pts(*k['rect'])
                 cv2.fillPoly(ov,   [pts], config.MASK_WHITE_FILL)
-                cv2.polylines(ov,  [pts], True, config.MASK_WHITE_BORDER, 2)
+                cv2.polylines(ov,  [pts], True, config.MASK_WHITE_BORDER, 2, cv2.LINE_AA)
                 if k['rect'][2] >= 16:
                     semi  = k['midi_note'] % 12
                     label = k['note_name'] if semi == 0 else _NOTE_NAMES[semi]
@@ -248,17 +248,23 @@ class KeyMask:
             if k['key_type'] == 'black':
                 pts = _warp_pts(*k['rect'])
                 cv2.fillPoly(ov,  [pts], config.MASK_BLACK_FILL)
-                cv2.polylines(ov, [pts], True, config.MASK_BLACK_BORDER, 2)
+                cv2.polylines(ov, [pts], True, config.MASK_BLACK_BORDER, 2, cv2.LINE_AA)
 
         # Blend ROI in-place
         cv2.addWeighted(ov, alpha, region, 1.0 - alpha, 0, region)
 
-        # Centre dots: drawn on full frame, fully opaque (centres already warped)
+        # Centre lines: drawn along the key's perspective axis from mid-top to
+        # mid-bottom of the polygon, reflecting E(x)=|tip_x - key_cx| (horizontal only)
         for k in self.keys:
             cx, cy = k['center']
             col = config.MASK_DOT_WHITE if k['key_type'] == 'white' else config.MASK_DOT_BLACK
-            cv2.circle(frame, (cx, cy), 4, col, -1)
-            cv2.circle(frame, (cx, cy), 4, (255, 255, 255), 1)
+            poly = k['polygon']
+            # Sort polygon points by Y to find top and bottom edges
+            pts = poly[poly[:, 1].argsort()]
+            top_mid = (int((pts[0][0] + pts[1][0]) / 2), int((pts[0][1] + pts[1][1]) / 2))
+            bot_mid = (int((pts[-2][0] + pts[-1][0]) / 2), int((pts[-2][1] + pts[-1][1]) / 2))
+            cv2.line(frame, top_mid, bot_mid, (255, 255, 255), 3, cv2.LINE_AA)  # white outline
+            cv2.line(frame, top_mid, bot_mid, col, 1, cv2.LINE_AA)              # colour on top
 
     # -- Mouse interaction --
 
@@ -417,13 +423,13 @@ def draw_mask_handles(frame: np.ndarray, mask: KeyMask) -> None:
     """
     # Warped quad outline
     corners_i = mask.corners.astype(np.int32)
-    cv2.polylines(frame, [corners_i], True, (180, 180, 180), 1)
+    cv2.polylines(frame, [corners_i], True, (180, 180, 180), 1, cv2.LINE_AA)
 
     # 4 corner circles — warp handles (white fill, black outline)
     cr = 9   # circle radius
     for cx, cy in corners_i:
-        cv2.circle(frame, (cx, cy), cr + 1, (0, 0, 0),       -1)
-        cv2.circle(frame, (cx, cy), cr,     (255, 255, 255),  -1)
+        cv2.circle(frame, (cx, cy), cr + 1, (0, 0, 0),       -1, cv2.LINE_AA)
+        cv2.circle(frame, (cx, cy), cr,     (255, 255, 255),  -1, cv2.LINE_AA)
 
     # 4 edge-midpoint squares — resize handles (white fill, black outline)
     ox, oy = mask.ox, mask.oy
@@ -522,12 +528,12 @@ class MaskControlPanel:
         panel = np.full((self.PH, self.PW, 3), 18, dtype=np.uint8)
         self._btns = []
         self._draw_table(panel)
-        cv2.line(panel, (335, 6), (335, self.PH - 6), (55, 55, 55), 1)
+        cv2.line(panel, (335, 6), (335, self.PH - 6), (55, 55, 55), 1, cv2.LINE_AA)
         self._draw_buttons(panel)
 
         # "Calibration saved!" confirmation banner (shown for 2 s after save)
         if time.monotonic() < self._save_msg_until:
-            cv2.rectangle(panel, (0, self.PH - 34), (self.PW, self.PH), (20, 90, 30), -1)
+            cv2.rectangle(panel, (0, self.PH - 34), (self.PW, self.PH), (20, 90, 30), -1, cv2.LINE_AA)
             cv2.putText(panel, "Calibration saved!", (10, self.PH - 10),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.65, (180, 255, 180), 2)
 
@@ -557,8 +563,8 @@ class MaskControlPanel:
 
     def _btn(self, panel, x, y, w, h, label, cb, color=(42, 42, 42)):
         x2, y2 = x + w, y + h
-        cv2.rectangle(panel, (x, y), (x2, y2), color, -1)
-        cv2.rectangle(panel, (x, y), (x2, y2), (130, 130, 130), 1)
+        cv2.rectangle(panel, (x, y), (x2, y2), color, -1, cv2.LINE_AA)
+        cv2.rectangle(panel, (x, y), (x2, y2), (130, 130, 130), 1, cv2.LINE_AA)
         if label:
             (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.52, 1)
             cv2.putText(panel, label,
@@ -568,7 +574,7 @@ class MaskControlPanel:
 
     @staticmethod
     def _lbl(panel, x, y, text, scale=0.50, color=(160, 160, 160)):
-        cv2.putText(panel, text, (x, y), cv2.FONT_HERSHEY_SIMPLEX, scale, color, 1)
+        cv2.putText(panel, text, (x, y), cv2.FONT_HERSHEY_SIMPLEX, scale, color, 1, cv2.LINE_AA)
 
     @staticmethod
     def _tri(panel, cx, cy, direction, size=6, color=(220, 220, 220)):
@@ -591,12 +597,12 @@ class MaskControlPanel:
         cv2.putText(panel, "Controls Reference", (10, 22),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.62, (255, 200, 50), 1)
         hdr_y = 30
-        cv2.rectangle(panel, (8, hdr_y), (328, hdr_y + 24), (40, 40, 40), -1)
+        cv2.rectangle(panel, (8, hdr_y), (328, hdr_y + 24), (40, 40, 40), -1, cv2.LINE_AA)
         cv2.putText(panel, "Action", (14, hdr_y + 17),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.46, (210, 210, 210), 1)
         cv2.putText(panel, "Result", (162, hdr_y + 17),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.46, (210, 210, 210), 1)
-        cv2.line(panel, (158, hdr_y), (158, hdr_y + 24), (70, 70, 70), 1)
+        cv2.line(panel, (158, hdr_y), (158, hdr_y + 24), (70, 70, 70), 1, cv2.LINE_AA)
 
         rh = 30
         for i, (act, res) in enumerate(self._TABLE):
@@ -607,8 +613,8 @@ class MaskControlPanel:
                         cv2.FONT_HERSHEY_SIMPLEX, 0.43, (200, 200, 200), 1)
             cv2.putText(panel, res, (162, y0 + 20),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.39, (145, 145, 145), 1)
-            cv2.line(panel, (158, y0), (158, y0 + rh), (50, 50, 50), 1)
-            cv2.line(panel, (8,   y0), (328, y0),      (45, 45, 45), 1)
+            cv2.line(panel, (158, y0), (158, y0 + rh), (50, 50, 50), 1, cv2.LINE_AA)
+            cv2.line(panel, (8,   y0), (328, y0),      (45, 45, 45), 1, cv2.LINE_AA)
 
         cv2.rectangle(panel, (8, hdr_y),
                       (328, hdr_y + 24 + len(self._TABLE) * rh), (70, 70, 70), 1)
@@ -635,8 +641,8 @@ class MaskControlPanel:
         y += 18
 
         # ── Move (cross layout) ───────────────────────────────────────
-        cv2.rectangle(panel, (rx, y), (self.PW - 4, y + 120), (26, 26, 26), -1)
-        cv2.rectangle(panel, (rx, y), (self.PW - 4, y + 120), (55, 55, 55), 1)
+        cv2.rectangle(panel, (rx, y), (self.PW - 4, y + 120), (26, 26, 26), -1, cv2.LINE_AA)
+        cv2.rectangle(panel, (rx, y), (self.PW - 4, y + 120), (55, 55, 55), 1, cv2.LINE_AA)
         self._lbl(panel, rx + 8, y + 14, "Move", 0.48, (180, 180, 180))
 
         def _mv(ddx, ddy):
@@ -663,8 +669,8 @@ class MaskControlPanel:
         # ── Section helper ────────────────────────────────────────────
         def _section(label, minus_cb, plus_cb):
             nonlocal y
-            cv2.rectangle(panel, (rx, y), (self.PW - 4, y + 52), (26, 26, 26), -1)
-            cv2.rectangle(panel, (rx, y), (self.PW - 4, y + 52), (55, 55, 55), 1)
+            cv2.rectangle(panel, (rx, y), (self.PW - 4, y + 52), (26, 26, 26), -1, cv2.LINE_AA)
+            cv2.rectangle(panel, (rx, y), (self.PW - 4, y + 52), (55, 55, 55), 1, cv2.LINE_AA)
             self._lbl(panel, rx + 8, y + 16, label, 0.48, (200, 200, 200))
             bx0 = cx - BW - 5
             self._btn(panel, bx0,           y + 20, BW, BH, "-", minus_cb)
