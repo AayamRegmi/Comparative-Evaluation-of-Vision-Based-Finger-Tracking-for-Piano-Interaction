@@ -440,6 +440,52 @@ def chart_15(records):
     return out
 
 
+def chart_16(records):
+    """MJMPE vs lux scatter: per-category stats + regression per model."""
+    def _lux_cat(lux):
+        if lux < 100:  return "Dim"
+        if lux < 500:  return "Indoor"
+        return "Bright"
+
+    out = {}
+    for model in _MODELS:
+        recs = [r for r in records
+                if r["model"] == model
+                and r.get("mjmpe_px") is not None
+                and r.get("lux") is not None]
+        if not recs:
+            continue
+
+        xs = np.array([r["lux"]      for r in recs])
+        ys = np.array([r["mjmpe_px"] for r in recs])
+
+        if len(xs) >= 2:
+            slope, intercept = np.polyfit(xs, ys, 1)
+            corr = np.corrcoef(xs, ys)[0, 1]
+            r2   = float(corr ** 2)
+        else:
+            slope = intercept = r2 = None
+
+        by_cat = {}
+        for cat in _LUX_ORDER:
+            cat_ys = [r["mjmpe_px"] for r in recs if _lux_cat(r["lux"]) == cat]
+            by_cat[cat] = {
+                "n":       len(cat_ys),
+                "mean_px": round(float(np.mean(cat_ys)), 3) if cat_ys else None,
+                "sd_px":   round(float(np.std(cat_ys)),  3) if len(cat_ys) > 1 else None,
+            }
+
+        out[model] = {
+            "n": len(recs),
+            "lux_range": [float(xs.min()), float(xs.max())],
+            "regression_slope":     round(float(slope),     4) if slope     is not None else None,
+            "regression_intercept": round(float(intercept), 4) if intercept is not None else None,
+            "r_squared":            round(r2, 4)                if r2        is not None else None,
+            "by_category": by_cat,
+        }
+    return out
+
+
 # ---------------------------------------------------------------------------
 
 def main():
@@ -478,6 +524,7 @@ def main():
         "chart_13_accuracy_by_finger_openpose":   chart_13(records),
         "chart_14_mediapipe_per_hand_hitrate":     chart_14(records),
         "chart_15_mediapipe_per_hand_mjmpe":       chart_15(records),
+        "chart_16_mjmpe_vs_lux_scatter":           chart_16(records),
     }
 
     out_path = Path(args.out)
