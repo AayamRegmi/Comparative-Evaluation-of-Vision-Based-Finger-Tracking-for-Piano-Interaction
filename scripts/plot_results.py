@@ -1065,6 +1065,164 @@ def plot_accuracy_by_finger(records, out_dir):
 
 
 # ---------------------------------------------------------------------------
+# Chart 14 — Per-hand detection rate (MediaPipe, specified participants)
+# ---------------------------------------------------------------------------
+
+def plot_mediapipe_per_hand_hitrate(records, out_dir):
+    """
+    Chart 14 — MediaPipe per-hand polygon hit-rate stacked bar.
+    matched% + detection-fail% as % of (matched + fail) per hand.
+    """
+    mp_recs = [r for r in records if r["model"] == "mediapipe"]
+    if not mp_recs:
+        print("  14: no MediaPipe data — skipping")
+        return
+
+    totals = {"L": {"matched": 0, "detection_fail": 0},
+              "R": {"matched": 0, "detection_fail": 0}}
+    for r in mp_recs:
+        ph = r.get("per_hand", {})
+        for side in ["L", "R"]:
+            totals[side]["matched"]        += ph.get(side, {}).get("matched", 0) or 0
+            totals[side]["detection_fail"] += ph.get(side, {}).get("detection_fail", 0) or 0
+
+    side_labels = ["Left Hand", "Right Hand"]
+    x         = np.arange(2)
+    hit_pcts  = []
+    fail_pcts = []
+    ns        = []
+    for side in ["L", "R"]:
+        m     = totals[side]["matched"]
+        d     = totals[side]["detection_fail"]
+        denom = m + d
+        ns.append(denom)
+        hit_pcts.append(100.0 * m / denom if denom else 0.0)
+        fail_pcts.append(100.0 * d / denom if denom else 0.0)
+
+    fig, ax = plt.subplots(figsize=(6, 5))
+    ax.bar(x, hit_pcts,  label="Matched (on key)",  color="#4CAF50", alpha=0.85, edgecolor="white")
+    ax.bar(x, fail_pcts, bottom=hit_pcts,
+           label="Detection fail", color="#FF9800", alpha=0.85, edgecolor="white")
+
+    for i, (hr, fr, n) in enumerate(zip(hit_pcts, fail_pcts, ns)):
+        if hr > 2:
+            ax.text(i, hr / 2, f"{hr:.1f}%\n(n={n})",
+                    ha="center", va="center", fontsize=10, fontweight="bold", color="white")
+        if fr > 2:
+            ax.text(i, hr + fr / 2, f"{fr:.1f}%",
+                    ha="center", va="center", fontsize=10, fontweight="bold", color="white")
+
+    ax.set_title("MediaPipe — Polygon Hit-Rate by Hand")
+    ax.set_ylabel("% of attributable events (matched + fail)")
+    ax.set_xlabel("n = matched + detection-fail events per hand", fontsize=9, color="#555")
+    ax.set_xticks(x)
+    ax.set_xticklabels(side_labels, fontsize=11)
+    ax.set_ylim(0, 108)
+    ax.legend(loc="lower right")
+    ax.grid(axis="y", alpha=0.3)
+    fig.tight_layout()
+    _save(fig, out_dir, "14_mediapipe_per_hand_hitrate.png")
+
+
+def plot_mediapipe_per_hand_mjmpe(records, out_dir):
+    """
+    Chart 15 — MediaPipe per-hand MJMPE ±1 SD across sessions.
+    Only sessions where that hand had at least one matched event are included.
+    """
+    mp_recs = [r for r in records if r["model"] == "mediapipe"]
+    if not mp_recs:
+        print("  15: no MediaPipe data — skipping")
+        return
+
+    mjmpe_vals = {"L": [], "R": []}
+    for r in mp_recs:
+        ph = r.get("per_hand", {})
+        for side in ["L", "R"]:
+            m = ph.get(side, {}).get("matched", 0) or 0
+            v = ph.get(side, {}).get("mjmpe_px")
+            if v is not None and m > 0:
+                mjmpe_vals[side].append(v)
+
+    side_labels = ["Left Hand", "Right Hand"]
+    x     = np.arange(2)
+    means = [np.mean(mjmpe_vals[s]) if mjmpe_vals[s] else 0 for s in ["L", "R"]]
+    sds   = [np.std(mjmpe_vals[s], ddof=0) if len(mjmpe_vals[s]) > 1 else 0
+             for s in ["L", "R"]]
+    ns    = [len(mjmpe_vals[s]) for s in ["L", "R"]]
+
+    fig, ax = plt.subplots(figsize=(6, 5))
+    bars = ax.bar(x, means, 0.45, yerr=sds, capsize=6,
+                  color=_MODEL_COLORS["mediapipe"], alpha=0.85, edgecolor="white",
+                  error_kw={"linewidth": 1.5, "ecolor": "#444"})
+    for bar, v, e, n in zip(bars, means, sds, ns):
+        if v > 0:
+            ax.text(bar.get_x() + bar.get_width() / 2, v + e + 0.15,
+                    f"{v:.2f} px\n(n={n})", ha="center", va="bottom", fontsize=10)
+
+    ax.set_title("MediaPipe — MJMPE by Hand (matched events)")
+    ax.set_ylabel("Mean MJMPE (px)  ±SD")
+    ax.set_xticks(x)
+    ax.set_xticklabels(side_labels, fontsize=11)
+    ax.set_ylim(0, max(means) + max(sds) + 2 if any(means) else 10)
+    ax.grid(axis="y", alpha=0.3)
+    fig.tight_layout()
+    _save(fig, out_dir, "15_mediapipe_per_hand_mjmpe.png")
+
+
+# ---------------------------------------------------------------------------
+# Chart 16 — Scatter: MJMPE vs raw lux value with regression line
+# ---------------------------------------------------------------------------
+
+def plot_mjmpe_vs_lux_scatter(records, out_dir):
+    """
+    Scatter + regression of MJMPE against raw lux values (continuous),
+    one series per model. Vertical dashed lines mark the Dim/Indoor/Bright
+    category boundaries (100 lux, 500 lux) for reference.
+    """
+    fig, ax = plt.subplots(figsize=(9, 5))
+
+    # Shaded bands for lighting categories
+    ax.axvspan(0,   100, color="#78909C", alpha=0.07, zorder=0)
+    ax.axvspan(100, 500, color="#FFA726", alpha=0.07, zorder=0)
+    ax.axvline(100, color="#aaa", linewidth=1, linestyle="--", zorder=1)
+    ax.axvline(500, color="#aaa", linewidth=1, linestyle="--", zorder=1)
+
+    # Category labels along the top
+    ax.text(50,  0.25, "Dim",     ha="center", va="bottom", fontsize=8, color="#888")
+    ax.text(300, 0.25, "Indoor",  ha="center", va="bottom", fontsize=8, color="#888")
+
+    all_ys = []
+    for model in _MODELS:
+        recs = [r for r in records
+                if r["model"] == model
+                and r.get("mjmpe_px") is not None
+                and r.get("lux") is not None]
+        if not recs:
+            continue
+        xs = [r["lux"]     for r in recs]
+        ys = [r["mjmpe_px"] for r in recs]
+        all_ys.extend(ys)
+        ax.scatter(xs, ys, label=model.capitalize(),
+                   color=_MODEL_COLORS[model], alpha=0.8, s=70, zorder=3)
+        if len(xs) >= 2:
+            z  = np.polyfit(xs, ys, 1)
+            xp = np.linspace(min(xs), max(xs), 200)
+            ax.plot(xp, np.polyval(z, xp),
+                    color=_MODEL_COLORS[model], linestyle="--", alpha=0.65,
+                    label=f"{model.capitalize()} trend")
+
+    ax.set_xlabel("Lux (measured)")
+    ax.set_ylabel("MJMPE (px)")
+    ax.set_title("MJMPE vs Lux Level")
+    ax.set_xlim(left=0)
+    ax.set_ylim(bottom=0, top=max(all_ys) * 1.15 if all_ys else 15)
+    ax.legend(fontsize=9)
+    ax.grid(alpha=0.3)
+    fig.tight_layout()
+    _save(fig, out_dir, "16_mjmpe_vs_lux_scatter.png")
+
+
+# ---------------------------------------------------------------------------
 # Chart 13 — Per-finger accuracy breakdown (OpenPose only)
 # ---------------------------------------------------------------------------
 
@@ -1183,6 +1341,9 @@ def main():
     plot_mjmpe_by_hand(records, out_dir)
     plot_accuracy_by_finger(records, out_dir)
     plot_accuracy_by_finger_openpose(records, out_dir)
+    plot_mediapipe_per_hand_hitrate(records, out_dir)
+    plot_mediapipe_per_hand_mjmpe(records, out_dir)
+    plot_mjmpe_vs_lux_scatter(records, out_dir)
 
     print("\nGenerating per-participant reports...")
     for pid in pids:
