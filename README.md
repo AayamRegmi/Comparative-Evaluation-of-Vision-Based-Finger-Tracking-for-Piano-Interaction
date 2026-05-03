@@ -7,4 +7,4 @@ Research in robustness of open-source finger tracking libraries in terms of pian
 - [x] Create data recording system with video and midi timing sync
 - [x] update report
 - [x] complete ethical consent form
-- [ ] create work in progress presentation
+- [x] create work in progress presentation
