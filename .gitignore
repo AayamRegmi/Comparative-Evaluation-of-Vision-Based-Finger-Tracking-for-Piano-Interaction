@@ -98,5 +98,6 @@ nox/
 
 # Documentation build output
 docs/_build/
+Documentation/forms/
 
 .claude
