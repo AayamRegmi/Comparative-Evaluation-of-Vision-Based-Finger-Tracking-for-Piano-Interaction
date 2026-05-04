@@ -1,5 +1,5 @@
 """key_calibration.py
-Interactive piano keyboard overlay for MJMPE key-centre calibration.
+Interactive piano keyboard overlay for MPJPE key-centre calibration.
 
 Drag any of the 8 handles to resize (Photoshop-style), drag the interior to move.
 Press ENTER to save key centre coordinates to data/calibration/key_centers.json.
@@ -12,6 +12,7 @@ Controls:
   Scroll up / down      – add / remove a white key on the right
   [ / ]                 – shift starting note one white key down / up
   - / =                 – shrink / grow white key width (fine, 1 px)
+  C                     – toggle centre visualisation (line = full-depth / dot = single point)
   H                     – toggle help
   ENTER or S            – save calibration
   ESC                   – quit without saving
@@ -196,10 +197,13 @@ class KeyMask:
 
     # -- Drawing --
 
-    def draw(self, frame: np.ndarray, alpha: float = None) -> None:
+    def draw(self, frame: np.ndarray, alpha: float = None,
+             center_viz: str = 'line') -> None:
         """
         Blend perspective-warped keyboard overlay onto frame in-place.
         Operates on the bounding-box ROI of the warped quad for performance.
+        center_viz: 'line' = full-depth vertical line (default),
+                    'dot'  = single filled circle at the calculated center point.
         """
         if alpha is None:
             alpha = config.MASK_ALPHA
@@ -253,18 +257,23 @@ class KeyMask:
         # Blend ROI in-place
         cv2.addWeighted(ov, alpha, region, 1.0 - alpha, 0, region)
 
-        # Centre lines: drawn along the key's perspective axis from mid-top to
-        # mid-bottom of the polygon, reflecting E(x)=|tip_x - key_cx| (horizontal only)
+        # Centre visualisation — UI only, does not affect stored center coords
         for k in self.keys:
             cx, cy = k['center']
             col = config.MASK_DOT_WHITE if k['key_type'] == 'white' else config.MASK_DOT_BLACK
-            poly = k['polygon']
-            # Sort polygon points by Y to find top and bottom edges
-            pts = poly[poly[:, 1].argsort()]
-            top_mid = (int((pts[0][0] + pts[1][0]) / 2), int((pts[0][1] + pts[1][1]) / 2))
-            bot_mid = (int((pts[-2][0] + pts[-1][0]) / 2), int((pts[-2][1] + pts[-1][1]) / 2))
-            cv2.line(frame, top_mid, bot_mid, (255, 255, 255), 3, cv2.LINE_AA)  # white outline
-            cv2.line(frame, top_mid, bot_mid, col, 1, cv2.LINE_AA)              # colour on top
+            if center_viz == 'dot':
+                # Classic single-point: filled circle at the calculated center
+                cv2.circle(frame, (cx, cy), 4, (255, 255, 255), -1, cv2.LINE_AA)
+                cv2.circle(frame, (cx, cy), 3, col,             -1, cv2.LINE_AA)
+            else:
+                # Line mode: full-depth vertical through the key polygon,
+                # reflecting that the entire key height counts as the centre column
+                poly = k['polygon']
+                pts  = poly[poly[:, 1].argsort()]
+                top_mid = (int((pts[0][0] + pts[1][0]) / 2), int((pts[0][1] + pts[1][1]) / 2))
+                bot_mid = (int((pts[-2][0] + pts[-1][0]) / 2), int((pts[-2][1] + pts[-1][1]) / 2))
+                cv2.line(frame, top_mid, bot_mid, (255, 255, 255), 3, cv2.LINE_AA)
+                cv2.line(frame, top_mid, bot_mid, col, 1, cv2.LINE_AA)
 
     # -- Mouse interaction --
 
@@ -463,7 +472,7 @@ class MaskControlPanel:
     """
 
     WIN_NAME = "Mask Controls"
-    PW, PH   = 640, 480
+    PW, PH   = 640, 510
 
     _TABLE = [
         ("Drag interior",     "Move whole keyboard"),
@@ -487,6 +496,7 @@ class MaskControlPanel:
         self._visible        = False
         self._btns: list     = []        # [(x1, y1, x2, y2), callback]
         self._save_msg_until = 0.0       # monotonic() deadline for "saved" banner
+        self.center_viz      = 'line'    # shared with run_calibration via property
 
     # ------------------------------------------------------------------
     # Visibility
@@ -724,21 +734,29 @@ class MaskControlPanel:
         self._btn(panel, rx, y + 40, rw, BH, "RESET WARP",
                   _reset, color=(100, 55, 10))
 
+        # Centre visualisation toggle
+        viz_label = f"CTR VIZ: {self.center_viz.upper()}"
+        def _toggle_viz():
+            self.center_viz = 'dot' if self.center_viz == 'line' else 'line'
+        self._btn(panel, rx, y + 76, rw, BH, viz_label,
+                  _toggle_viz, color=(30, 60, 100))
+
 
 # ---------------------------------------------------------------------------
 # HUD
 # ---------------------------------------------------------------------------
 
 def _draw_hud(frame: np.ndarray, mask: KeyMask, total_keys: int, show_help: bool,
-              flip: bool = False) -> None:
+              flip: bool = False, center_viz: str = 'line') -> None:
     fh         = frame.shape[0]
     start_name = _midi_to_name(mask.start_midi)
 
+    viz_tag  = f"  |  CTR: {center_viz}"
     flip_tag = "  |  FLIP: ON" if flip else "  |  FLIP: off"
     status = (f"Keys: {mask.num_white} white / {total_keys} total  |  "
               f"Start: {start_name} (MIDI {mask.start_midi})  |  "
               f"Key: {mask.wkw}x{mask.wkh} px  |  "
-              f"Pos: ({mask.ox}, {mask.oy}){flip_tag}")
+              f"Pos: ({mask.ox}, {mask.oy}){viz_tag}{flip_tag}")
     cv2.putText(frame, status, (10, 22),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.52, (240, 240, 240), 1)
 
@@ -752,6 +770,7 @@ def _draw_hud(frame: np.ndarray, mask: KeyMask, total_keys: int, show_help: bool
             "Scroll                add / remove key",
             "[ / ]                 shift start note",
             "- / =                 fine key width",
+            "C                     toggle centre viz  (line / dot)",
             "F                     toggle 180 flip (match record.py)",
             "ENTER or S            save calibration",
             "ESC                   quit without saving",
@@ -761,7 +780,7 @@ def _draw_hud(frame: np.ndarray, mask: KeyMask, total_keys: int, show_help: bool
             cv2.putText(frame, l, (10, by + i * 20),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.50, (150, 150, 150), 1)
     else:
-        cv2.putText(frame, "F: flip   H: help   ENTER: save   ESC: quit",
+        cv2.putText(frame, "C: ctr viz   F: flip   H: help   ENTER: save   ESC: quit",
                     (10, fh - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (150, 150, 150), 1)
 
 
@@ -796,8 +815,9 @@ def run_calibration():
     while mask.start_midi % 12 not in _WHITE_SEMIS:
         mask.start_midi += 1
 
-    show_help = True
-    flip = False  # match record.py's F-key toggle (cv2.flip code -1: 180° rotation)
+    show_help  = True
+    flip       = False  # match record.py's F-key toggle (cv2.flip code -1: 180° rotation)
+    center_viz = 'line'  # 'line' = full-depth vertical | 'dot' = single point (UI only)
 
     def on_mouse(event, x, y, flags, _):
         # When flip is active the displayed frame is rotated 180°, so mouse coords
@@ -820,13 +840,13 @@ def run_calibration():
             break
 
         # Draw mask on raw frame first (coords are always in raw space)
-        mask.draw(frame)
+        mask.draw(frame, center_viz=center_viz)
         draw_mask_handles(frame, mask)
 
         # Apply flip AFTER drawing so the display matches what record.py saves
         display = cv2.flip(frame, -1) if flip else frame
 
-        _draw_hud(display, mask, len(mask.keys), show_help, flip)
+        _draw_hud(display, mask, len(mask.keys), show_help, flip, center_viz)
 
         cv2.imshow(_WIN_NAME, display)
         key = cv2.waitKey(20) & 0xFF
@@ -846,6 +866,10 @@ def run_calibration():
 
         elif key in (ord('h'), ord('H')):
             show_help = not show_help
+
+        elif key in (ord('c'), ord('C')):
+            center_viz = 'dot' if center_viz == 'line' else 'line'
+            print(f"Centre viz: {center_viz}")
 
         elif key in (ord('f'), ord('F')):
             flip = not flip

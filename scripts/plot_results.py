@@ -9,17 +9,17 @@
 # Output PNGs are written to data/plots/ (or --out).
 # Charts generated:
 #   00_participant_composition.png  – Fitzpatrick, lighting condition, hand size distributions
-#   01_model_comparison_mjmpe.png   – MediaPipe vs OpenPose MJMPE per participant
-#   02_per_finger_mjmpe.png         – per-finger MJMPE (L/R subplots, both models)
+#   01_model_comparison_mpjpe.png   – MediaPipe vs OpenPose MPJPE per participant
+#   02_per_finger_mpjpe.png         – per-finger MPJPE (L/R subplots, both models)
 #   03_detection_breakdown.png      – matched / detection-fail / missed proportions
-#   04_mjmpe_by_lux.png             – MJMPE by lighting condition (Dim/Indoor/Bright)
-#   05_mjmpe_by_fitzpatrick.png     – MJMPE by Fitzpatrick skin type
-#   06_mjmpe_vs_handsize.png        – scatter MJMPE vs hand size cm with regression
-#   07_finger_distribution_<model>.png – box plots of per-finger MJMPE across sessions
-#   08_heatmap_<model>.png          – per-finger MJMPE heatmap across participants
+#   04_mpjpe_by_lux.png             – MPJPE by lighting condition (Dim/Indoor/Bright)
+#   05_mpjpe_by_fitzpatrick.png     – MPJPE by Fitzpatrick skin type
+#   06_mpjpe_vs_handsize.png        – scatter MPJPE vs hand size cm with regression
+#   07_finger_distribution_<model>.png – box plots of per-finger MPJPE across sessions
+#   08_heatmap_<model>.png          – per-finger MPJPE heatmap across participants
 #   09_detection_fail_by_fitzpatrick.png – detection-fail rate by Fitzpatrick skin type
 #   10_detection_fail_by_lux.png    – detection-fail rate by lighting condition
-#   11_mjmpe_by_hand.png            – overall MJMPE by hand (Left vs Right), MediaPipe only
+#   11_mpjpe_by_hand.png            – overall MPJPE by hand (Left vs Right), MediaPipe only
 #   12_accuracy_by_finger.png       – per-finger accuracy breakdown (within/above threshold), MediaPipe only
 #   13_accuracy_by_finger_openpose.png – same breakdown for OpenPose
 
@@ -195,7 +195,7 @@ def plot_participant_composition(records, out_dir):
 
 
 # ---------------------------------------------------------------------------
-# Chart 1 — MediaPipe vs OpenPose MJMPE per participant
+# Chart 1 — MediaPipe vs OpenPose MPJPE per participant
 # ---------------------------------------------------------------------------
 
 def plot_model_comparison(records, out_dir):
@@ -225,24 +225,24 @@ def plot_model_comparison(records, out_dir):
         ax.text(bar.get_x() + bar.get_width() / 2, mean + sd + 0.15,
                 f"{mean:.2f} px\n(n={n})", ha="center", va="bottom", fontsize=10)
 
-    ax.set_ylabel("Mean MJMPE (px)  ±SD")
-    ax.set_title("Overall MJMPE by Model")
+    ax.set_ylabel("Mean MPJPE (px)  ±SD")
+    ax.set_title("Overall MPJPE by Model")
     ax.set_xticks(x)
     ax.set_xticklabels([m.capitalize() for m in models], fontsize=12)
     ax.grid(axis="y", alpha=0.3)
     ax.set_ylim(0, max(means) + max(sds) + 1.5)
     fig.tight_layout()
-    _save(fig, out_dir, "01_model_comparison_mjmpe.png")
+    _save(fig, out_dir, "01_model_comparison_mpjpe.png")
 
 
 # ---------------------------------------------------------------------------
-# Chart 2 — Per-finger MJMPE
+# Chart 2 — Per-finger MPJPE
 #   MediaPipe: L/R split (physical hands via handedness detection)
 #   OpenPose:  combined L+R (hand split uses keyboard position only,
 #              not physically reliable at scene level)
 # ---------------------------------------------------------------------------
 
-def plot_per_finger_mjmpe(records, out_dir):
+def plot_per_finger_mpjpe(records, out_dir):
     x     = np.arange(len(_FINGER_NAMES))
     width = 0.35
 
@@ -263,7 +263,7 @@ def plot_per_finger_mjmpe(records, out_dir):
         ax.set_title(title)
         ax.set_xlabel("Finger")
         if side == "L":
-            ax.set_ylabel("Mean MJMPE (px) across participants")
+            ax.set_ylabel("Mean MPJPE (px) across participants")
         ax.set_xticks(x)
         ax.set_xticklabels(_FINGER_NAMES)
         ax.grid(axis="y", alpha=0.3)
@@ -290,9 +290,32 @@ def plot_per_finger_mjmpe(records, out_dir):
     ax_op.set_xticklabels(_FINGER_NAMES)
     ax_op.grid(axis="y", alpha=0.3)
 
-    fig.suptitle("Per-Finger MJMPE by Model")
+    fig.suptitle("Per-Finger MPJPE by Model")
     fig.tight_layout()
-    _save(fig, out_dir, "02_per_finger_mjmpe.png")
+    _save(fig, out_dir, "02_per_finger_mpjpe.png")
+
+    # MediaPipe-only variant (2 panels: L and R)
+    fig2, axes2 = plt.subplots(1, 2, figsize=(12, 5))
+    for ax, side, title in zip(axes2, ["L", "R"],
+                                ["MediaPipe — Left Hand", "MediaPipe — Right Hand"]):
+        means = [np.mean(_finger_vals(mp_recs, side, fi)) if _finger_vals(mp_recs, side, fi) else 0
+                 for fi in range(5)]
+        bars = ax.bar(x, means, 0.5, color=_MODEL_COLORS["mediapipe"],
+                      alpha=0.85, edgecolor="white")
+        for bar, v in zip(bars, means):
+            if v > 0:
+                ax.text(bar.get_x() + bar.get_width() / 2, v + 0.1,
+                        f"{v:.1f}", ha="center", va="bottom", fontsize=8)
+        ax.set_title(title)
+        ax.set_xlabel("Finger")
+        if side == "L":
+            ax.set_ylabel("Mean MPJPE (px) across participants")
+        ax.set_xticks(x)
+        ax.set_xticklabels(_FINGER_NAMES)
+        ax.grid(axis="y", alpha=0.3)
+    fig2.suptitle("Per-Finger MPJPE — MediaPipe")
+    fig2.tight_layout()
+    _save(fig2, out_dir, "02_per_finger_mpjpe_mediapipe.png")
 
 
 # ---------------------------------------------------------------------------
@@ -340,7 +363,7 @@ def plot_detection_breakdown(records, out_dir):
 
 
 # ---------------------------------------------------------------------------
-# Chart 4 — MJMPE by lighting condition
+# Chart 4 — MPJPE by lighting condition
 # ---------------------------------------------------------------------------
 
 def plot_by_lux(records, out_dir):
@@ -364,18 +387,18 @@ def plot_by_lux(records, out_dir):
                color=_MODEL_COLORS[model], alpha=0.85, edgecolor="white")
 
     ax.set_xlabel("Lighting condition")
-    ax.set_ylabel("Mean MJMPE (px)  ±SD")
-    ax.set_title("MJMPE by Lighting Condition")
+    ax.set_ylabel("Mean MPJPE (px)  ±SD")
+    ax.set_title("MPJPE by Lighting Condition")
     ax.set_xticks(x)
     ax.set_xticklabels(_LUX_ORDER)
     ax.legend()
     ax.grid(axis="y", alpha=0.3)
     fig.tight_layout()
-    _save(fig, out_dir, "04_mjmpe_by_lux.png")
+    _save(fig, out_dir, "04_mpjpe_by_lux.png")
 
 
 # ---------------------------------------------------------------------------
-# Chart 5 — MJMPE by Fitzpatrick type
+# Chart 5 — MPJPE by Fitzpatrick type
 # ---------------------------------------------------------------------------
 
 def plot_by_fitzpatrick(records, out_dir):
@@ -404,21 +427,21 @@ def plot_by_fitzpatrick(records, out_dir):
                color=_MODEL_COLORS[model], alpha=0.85, edgecolor="white")
 
     ax.set_xlabel("Fitzpatrick Type")
-    ax.set_ylabel("Mean MJMPE (px)  ±SD")
-    ax.set_title("MJMPE by Fitzpatrick Skin Type")
+    ax.set_ylabel("Mean MPJPE (px)  ±SD")
+    ax.set_title("MPJPE by Fitzpatrick Skin Type")
     ax.set_xticks(x)
     ax.set_xticklabels([f"Type {t}\n({_FITZ_LABELS.get(t, '')})" for t in all_types])
     ax.legend()
     ax.grid(axis="y", alpha=0.3)
     fig.tight_layout()
-    _save(fig, out_dir, "05_mjmpe_by_fitzpatrick.png")
+    _save(fig, out_dir, "05_mpjpe_by_fitzpatrick.png")
 
 
 # ---------------------------------------------------------------------------
-# Chart 6 — Scatter: MJMPE vs hand size with regression line
+# Chart 6 — Scatter: MPJPE vs hand size with regression line
 # ---------------------------------------------------------------------------
 
-def plot_mjmpe_vs_handsize(records, out_dir):
+def plot_mpjpe_vs_handsize(records, out_dir):
     fig, ax = plt.subplots(figsize=(8, 5))
 
     for model in _MODELS:
@@ -439,16 +462,16 @@ def plot_mjmpe_vs_handsize(records, out_dir):
                     color=_MODEL_COLORS[model], linestyle="--", alpha=0.6)
 
     ax.set_xlabel("Hand size (cm)")
-    ax.set_ylabel("MJMPE (px)")
-    ax.set_title("MJMPE vs Hand Size")
+    ax.set_ylabel("MPJPE (px)")
+    ax.set_title("MPJPE vs Hand Size")
     ax.legend()
     ax.grid(alpha=0.3)
     fig.tight_layout()
-    _save(fig, out_dir, "06_mjmpe_vs_handsize.png")
+    _save(fig, out_dir, "06_mpjpe_vs_handsize.png")
 
 
 # ---------------------------------------------------------------------------
-# Chart 7 — Box plot: per-finger MJMPE distribution across sessions
+# Chart 7 — Box plot: per-finger MPJPE distribution across sessions
 # ---------------------------------------------------------------------------
 
 def plot_finger_distribution(records, out_dir):
@@ -475,9 +498,9 @@ def plot_finger_distribution(records, out_dir):
                 ax.set_title(title)
                 ax.set_xlabel("Finger")
                 if side == "L":
-                    ax.set_ylabel("MJMPE (px) — mean per session")
+                    ax.set_ylabel("MPJPE (px) — mean per session")
                 ax.grid(axis="y", alpha=0.3)
-            fig.suptitle("MediaPipe — Per-Finger MJMPE Distribution (across sessions)")
+            fig.suptitle("MediaPipe — Per-Finger MPJPE Distribution (across sessions)")
         else:
             # OpenPose: combine L+R — hand split not physically reliable at scene level
             fig, ax = plt.subplots(figsize=(7, 5))
@@ -489,18 +512,18 @@ def plot_finger_distribution(records, out_dir):
                 patch.set_facecolor(_MODEL_COLORS[model])
                 patch.set_alpha(0.65)
             ax.set_xlabel("Finger")
-            ax.set_ylabel("MJMPE (px) — mean per session")
+            ax.set_ylabel("MPJPE (px) — mean per session")
             ax.set_title("Both hands combined\n"
                          "(hand split uses keyboard position, not physical handedness)")
             ax.grid(axis="y", alpha=0.3)
-            fig.suptitle("OpenPose — Per-Finger MJMPE Distribution (across sessions)")
+            fig.suptitle("OpenPose — Per-Finger MPJPE Distribution (across sessions)")
 
         fig.tight_layout()
         _save(fig, out_dir, f"07_finger_distribution_{model}.png")
 
 
 # ---------------------------------------------------------------------------
-# Chart 8 — Heatmap: per-finger MJMPE across participants
+# Chart 8 — Heatmap: per-finger MPJPE across participants
 # ---------------------------------------------------------------------------
 
 def plot_finger_heatmap(records, out_dir):
@@ -573,8 +596,8 @@ def plot_finger_heatmap(records, out_dir):
         if draw_separator:
             ax.axvline(4.5, color="white", linewidth=2.5)
 
-        plt.colorbar(im, ax=ax, label="MJMPE (px)")
-        ax.set_title(f"{model.capitalize()} — Per-Finger MJMPE Heatmap (px){title_suffix}")
+        plt.colorbar(im, ax=ax, label="MPJPE (px)")
+        ax.set_title(f"{model.capitalize()} — Per-Finger MPJPE Heatmap (px){title_suffix}")
         fig.tight_layout()
         _save(fig, out_dir, f"08_heatmap_{model}.png")
 
@@ -698,17 +721,17 @@ def plot_participant_report(pid, records, out_dir):
     # ── Panel 3 : overall stats text ──────────────────────────────────────
     _style_ax(ax_overall, keep_axes=False)
 
-    mp_mjmpe = mp_rec.get("mjmpe_px")
+    mp_mpjpe = mp_rec.get("mjmpe_px")
     mp_acc   = mp_rec.get("accuracy_pct")
     mp_dr    = mp_rec.get("detection_rate_pct")
-    op_mjmpe = op_rec.get("mjmpe_px")          if op_rec else None
+    op_mpjpe = op_rec.get("mjmpe_px")          if op_rec else None
     op_dr    = op_rec.get("detection_rate_pct") if op_rec else None
 
     stat_rows = [
-        ("MediaPipe MJMPE",      f"{mp_mjmpe:.2f} px" if mp_mjmpe else "—",  C_MP),
+        ("MediaPipe MPJPE",      f"{mp_mpjpe:.2f} px" if mp_mpjpe else "—",  C_MP),
         ("MediaPipe Accuracy",   f"{mp_acc:.1f}%"     if mp_acc   else "—",  C_MP),
         ("MediaPipe Det. Rate",  f"{mp_dr:.1f}%"      if mp_dr    else "—",  C_MP),
-        ("OpenPose MJMPE",       f"{op_mjmpe:.2f} px" if op_mjmpe else "—",  C_OP),
+        ("OpenPose MPJPE",       f"{op_mpjpe:.2f} px" if op_mpjpe else "—",  C_OP),
         ("OpenPose Det. Rate",   f"{op_dr:.1f}%"      if op_dr    else "—",  C_OP),
     ]
 
@@ -724,7 +747,7 @@ def plot_participant_report(pid, records, out_dir):
                         transform=ax_overall.transAxes,
                         fontsize=10, fontweight="semibold", color=col, va="top")
 
-    # ── Panels 4 & 5 : per-finger MJMPE L and R ───────────────────────────
+    # ── Panels 4 & 5 : per-finger MPJPE L and R ───────────────────────────
     finger_short = ["Thumb", "Index", "Mid", "Ring", "Pinky"]
     xf = np.arange(5)
 
@@ -734,16 +757,16 @@ def plot_participant_report(pid, records, out_dir):
         ph      = mp_rec.get("per_hand", {}).get(side, {})
         fingers = ph.get("fingers", {})
 
-        mjmpe_vals = []
+        mpjpe_vals = []
         counts     = []
         for fi in range(5):
             fd = fingers.get(str(fi))
-            mjmpe_vals.append(fd["mjmpe"] if fd and fd.get("mjmpe") is not None else None)
+            mpjpe_vals.append(fd["mjmpe"] if fd and fd.get("mjmpe") is not None else None)
             counts.append(fd.get("count", 0) if fd else 0)
 
-        bar_vals   = [v if v is not None else 0 for v in mjmpe_vals]
+        bar_vals   = [v if v is not None else 0 for v in mpjpe_vals]
         bar_colors = []
-        for v in mjmpe_vals:
+        for v in mpjpe_vals:
             if v is None:
                 bar_colors.append(C_GREY)
             elif v <= 4:
@@ -755,7 +778,7 @@ def plot_participant_report(pid, records, out_dir):
 
         bars = ax.bar(xf, bar_vals, color=bar_colors, alpha=0.88,
                       edgecolor=BORDER, width=0.6)
-        for bar, v in zip(bars, mjmpe_vals):
+        for bar, v in zip(bars, mpjpe_vals):
             if v is not None:
                 ax.text(bar.get_x() + bar.get_width() / 2, v + 0.15,
                         f"{v:.1f}", ha="center", va="bottom", fontsize=8, color=TXT)
@@ -763,16 +786,16 @@ def plot_participant_report(pid, records, out_dir):
                 ax.text(bar.get_x() + bar.get_width() / 2, 0.3,
                         "N/A", ha="center", va="bottom", fontsize=7, color=MUTED)
 
-        hand_mjmpe   = ph.get("mjmpe_px")
+        hand_mpjpe   = ph.get("mjmpe_px")
         hand_matched = ph.get("matched", 0)
         subtitle = f"({hand_matched} notes"
-        if hand_mjmpe:
-            subtitle += f",  avg {hand_mjmpe:.1f} px)"
+        if hand_mpjpe:
+            subtitle += f",  avg {hand_mpjpe:.1f} px)"
         else:
             subtitle += ")"
 
         ax.set_title(f"{title}  {subtitle}", fontsize=9, color=TXT, pad=5)
-        ax.set_ylabel("MJMPE (px)", fontsize=8, color=MUTED)
+        ax.set_ylabel("MPJPE (px)", fontsize=8, color=MUTED)
         ax.set_xticks(xf)
         ax.set_xticklabels(finger_short, fontsize=8)
         ax.tick_params(colors=TXT, labelsize=8)
@@ -810,13 +833,13 @@ def plot_participant_report(pid, records, out_dir):
             dr_txt, dr_col = f"Low — {mp_dr:.1f}%",       C_RED
         highlights.append(("Detection Rate", dr_txt, dr_col))
 
-    if mp_mjmpe is not None:
-        if mp_mjmpe <= 4:
-            acc_txt, acc_col = f"Great — {mp_mjmpe:.2f} px", C_GREEN
-        elif mp_mjmpe <= 7:
-            acc_txt, acc_col = f"Good — {mp_mjmpe:.2f} px",  C_YELLOW
+    if mp_mpjpe is not None:
+        if mp_mpjpe <= 4:
+            acc_txt, acc_col = f"Great — {mp_mpjpe:.2f} px", C_GREEN
+        elif mp_mpjpe <= 7:
+            acc_txt, acc_col = f"Good — {mp_mpjpe:.2f} px",  C_YELLOW
         else:
-            acc_txt, acc_col = f"Needs work — {mp_mjmpe:.2f} px", C_RED
+            acc_txt, acc_col = f"Needs work — {mp_mpjpe:.2f} px", C_RED
         highlights.append(("Overall Accuracy", acc_txt, acc_col))
 
     ax_hi.text(0.06, 0.97, "Highlights",
@@ -950,12 +973,12 @@ def plot_detection_fail_by_lux(records, out_dir):
 
 
 # ---------------------------------------------------------------------------
-# Chart 11 — Overall MJMPE by hand (Left vs Right), both models
+# Chart 11 — Overall MPJPE by hand (Left vs Right), both models
 # ---------------------------------------------------------------------------
 
-def plot_mjmpe_by_hand(records, out_dir):
+def plot_mpjpe_by_hand(records, out_dir):
     """
-    Bar chart: MediaPipe Left vs Right hand mean MJMPE.
+    Bar chart: MediaPipe Left vs Right hand mean MPJPE.
     OpenPose excluded — it has no physical handedness identifier.
     """
     mp_recs = [r for r in records if r["model"] == "mediapipe"]
@@ -988,14 +1011,14 @@ def plot_mjmpe_by_hand(records, out_dir):
                     f"{v:.2f} px\n(n={n})", ha="center", va="bottom", fontsize=10)
 
     ax.set_xlabel("Hand")
-    ax.set_ylabel("Mean MJMPE (px)  ±SD")
-    ax.set_title("MediaPipe — Overall MJMPE by Hand\n(physical handedness)")
+    ax.set_ylabel("Mean MPJPE (px)  ±SD")
+    ax.set_title("MediaPipe — Overall MPJPE by Hand\n(physical handedness)")
     ax.set_xticks(x)
     ax.set_xticklabels(side_labels, fontsize=12)
     ax.grid(axis="y", alpha=0.3)
     ax.set_ylim(0, max(means) + max(errs) + 1.5)
     fig.tight_layout()
-    _save(fig, out_dir, "11_mjmpe_by_hand.png")
+    _save(fig, out_dir, "11_mpjpe_by_hand.png")
 
 
 # ---------------------------------------------------------------------------
@@ -1124,9 +1147,9 @@ def plot_mediapipe_per_hand_hitrate(records, out_dir):
     _save(fig, out_dir, "14_mediapipe_per_hand_hitrate.png")
 
 
-def plot_mediapipe_per_hand_mjmpe(records, out_dir):
+def plot_mediapipe_per_hand_mpjpe(records, out_dir):
     """
-    Chart 15 — MediaPipe per-hand MJMPE ±1 SD across sessions.
+    Chart 15 — MediaPipe per-hand MPJPE ±1 SD across sessions.
     Only sessions where that hand had at least one matched event are included.
     """
     mp_recs = [r for r in records if r["model"] == "mediapipe"]
@@ -1134,21 +1157,21 @@ def plot_mediapipe_per_hand_mjmpe(records, out_dir):
         print("  15: no MediaPipe data — skipping")
         return
 
-    mjmpe_vals = {"L": [], "R": []}
+    mpjpe_vals = {"L": [], "R": []}
     for r in mp_recs:
         ph = r.get("per_hand", {})
         for side in ["L", "R"]:
             m = ph.get(side, {}).get("matched", 0) or 0
             v = ph.get(side, {}).get("mjmpe_px")
             if v is not None and m > 0:
-                mjmpe_vals[side].append(v)
+                mpjpe_vals[side].append(v)
 
     side_labels = ["Left Hand", "Right Hand"]
     x     = np.arange(2)
-    means = [np.mean(mjmpe_vals[s]) if mjmpe_vals[s] else 0 for s in ["L", "R"]]
-    sds   = [np.std(mjmpe_vals[s], ddof=0) if len(mjmpe_vals[s]) > 1 else 0
+    means = [np.mean(mpjpe_vals[s]) if mpjpe_vals[s] else 0 for s in ["L", "R"]]
+    sds   = [np.std(mpjpe_vals[s], ddof=0) if len(mpjpe_vals[s]) > 1 else 0
              for s in ["L", "R"]]
-    ns    = [len(mjmpe_vals[s]) for s in ["L", "R"]]
+    ns    = [len(mpjpe_vals[s]) for s in ["L", "R"]]
 
     fig, ax = plt.subplots(figsize=(6, 5))
     bars = ax.bar(x, means, 0.45, yerr=sds, capsize=6,
@@ -1159,23 +1182,23 @@ def plot_mediapipe_per_hand_mjmpe(records, out_dir):
             ax.text(bar.get_x() + bar.get_width() / 2, v + e + 0.15,
                     f"{v:.2f} px\n(n={n})", ha="center", va="bottom", fontsize=10)
 
-    ax.set_title("MediaPipe — MJMPE by Hand (matched events)")
-    ax.set_ylabel("Mean MJMPE (px)  ±SD")
+    ax.set_title("MediaPipe — MPJPE by Hand (matched events)")
+    ax.set_ylabel("Mean MPJPE (px)  ±SD")
     ax.set_xticks(x)
     ax.set_xticklabels(side_labels, fontsize=11)
     ax.set_ylim(0, max(means) + max(sds) + 2 if any(means) else 10)
     ax.grid(axis="y", alpha=0.3)
     fig.tight_layout()
-    _save(fig, out_dir, "15_mediapipe_per_hand_mjmpe.png")
+    _save(fig, out_dir, "15_mediapipe_per_hand_mpjpe.png")
 
 
 # ---------------------------------------------------------------------------
-# Chart 16 — Scatter: MJMPE vs raw lux value with regression line
+# Chart 16 — Scatter: MPJPE vs raw lux value with regression line
 # ---------------------------------------------------------------------------
 
-def plot_mjmpe_vs_lux_scatter(records, out_dir):
+def plot_mpjpe_vs_lux_scatter(records, out_dir):
     """
-    Scatter + regression of MJMPE against raw lux values (continuous),
+    Scatter + regression of MPJPE against raw lux values (continuous),
     one series per model. Vertical dashed lines mark the Dim/Indoor/Bright
     category boundaries (100 lux, 500 lux) for reference.
     """
@@ -1212,14 +1235,14 @@ def plot_mjmpe_vs_lux_scatter(records, out_dir):
                     label=f"{model.capitalize()} trend")
 
     ax.set_xlabel("Lux (measured)")
-    ax.set_ylabel("MJMPE (px)")
-    ax.set_title("MJMPE vs Lux Level")
+    ax.set_ylabel("MPJPE (px)")
+    ax.set_title("MPJPE vs Lux Level")
     ax.set_xlim(left=0)
     ax.set_ylim(bottom=0, top=max(all_ys) * 1.15 if all_ys else 15)
     ax.legend(fontsize=9)
     ax.grid(alpha=0.3)
     fig.tight_layout()
-    _save(fig, out_dir, "16_mjmpe_vs_lux_scatter.png")
+    _save(fig, out_dir, "16_mpjpe_vs_lux_scatter.png")
 
 
 # ---------------------------------------------------------------------------
@@ -1303,7 +1326,7 @@ def _save(fig, out_dir, filename):
 # ---------------------------------------------------------------------------
 
 def main():
-    parser = argparse.ArgumentParser(description="Plot MJMPE analysis results")
+    parser = argparse.ArgumentParser(description="Plot MPJPE analysis results")
     parser.add_argument("--processed", default=str(_PROCESSED),
                         help="Directory with *_results.json files")
     parser.add_argument("--out", default=str(_PLOTS_DIR),
@@ -1329,21 +1352,21 @@ def main():
 
     plot_participant_composition(records, out_dir)
     plot_model_comparison(records, out_dir)
-    plot_per_finger_mjmpe(records, out_dir)
+    plot_per_finger_mpjpe(records, out_dir)
     plot_detection_breakdown(records, out_dir)
     plot_by_lux(records, out_dir)
     plot_by_fitzpatrick(records, out_dir)
-    plot_mjmpe_vs_handsize(records, out_dir)
+    plot_mpjpe_vs_handsize(records, out_dir)
     plot_finger_distribution(records, out_dir)
     plot_finger_heatmap(records, out_dir)
     plot_detection_fail_by_fitzpatrick(records, out_dir)
     plot_detection_fail_by_lux(records, out_dir)
-    plot_mjmpe_by_hand(records, out_dir)
+    plot_mpjpe_by_hand(records, out_dir)
     plot_accuracy_by_finger(records, out_dir)
     plot_accuracy_by_finger_openpose(records, out_dir)
     plot_mediapipe_per_hand_hitrate(records, out_dir)
-    plot_mediapipe_per_hand_mjmpe(records, out_dir)
-    plot_mjmpe_vs_lux_scatter(records, out_dir)
+    plot_mediapipe_per_hand_mpjpe(records, out_dir)
+    plot_mpjpe_vs_lux_scatter(records, out_dir)
 
     print("\nGenerating per-participant reports...")
     for pid in pids:

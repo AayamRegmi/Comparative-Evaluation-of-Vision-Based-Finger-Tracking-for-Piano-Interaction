@@ -654,7 +654,7 @@ def run_record():
     
             # Key calibration mask (drawn first so all other overlays sit on top)
             if show_mask:
-                mask.draw(display)
+                mask.draw(display, center_viz=panel.center_viz if panel else 'line')
                 if not recording:
                     draw_mask_handles(display, mask)
     

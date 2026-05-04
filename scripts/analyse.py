@@ -1,5 +1,5 @@
 """analyse.py
-Offline per-session MJMPE analysis.
+Offline per-session MPJPE analysis.
 
 Loads a recorded participant session, runs a hand-landmark model over each
 video frame that corresponds to a MIDI note_on event, and writes a JSON
@@ -246,7 +246,7 @@ def _analyse_session(session_dir: Path, model_name: str, out_dir: Path,
     if not midi_jsonl.exists():
         raise FileNotFoundError(
             f"{pid}: No MIDI data found. Session was recorded without MIDI "
-            f"(or the midi_jsonl file is missing). Cannot compute MJMPE."
+            f"(or the midi_jsonl file is missing). Cannot compute MPJPE."
         )
     # Prefer session-local calibration snapshot; fall back to global file
     session_cal = session_dir / f"{pid}_key_centers.json"
@@ -379,7 +379,7 @@ def _analyse_session(session_dir: Path, model_name: str, out_dir: Path,
 
         # Polygon-containment identification (mirrors test.py exactly).
         # If no tip is inside the polygon the model failed to place a landmark
-        # on the pressed key — count as detection_fail, exclude from MJMPE.
+        # on the pressed key — count as detection_fail, exclude from MPJPE.
         inside_tips = [t for t in tips
                        if cv2.pointPolygonTest(
                            key_poly, (float(t[1]), float(t[2])), False
@@ -477,7 +477,7 @@ def _analyse_session(session_dir: Path, model_name: str, out_dir: Path,
     with open(out_path, "w") as fh_out:
         json.dump(result, fh_out, indent=2)
 
-    print(f"  MJMPE: {result['mjmpe_px']} px  |  Acc: {result['accuracy_pct']}%  "
+    print(f"  MPJPE: {result['mjmpe_px']} px  |  Acc: {result['accuracy_pct']}%  "
           f"|  DetRate: {result['detection_rate_pct']}%  "
           f"|  Matched: {matched}  Fail: {total_df}  Missed: {missed}")
     for side, side_name in [('L', 'Left'), ('R', 'Right')]:
@@ -517,7 +517,7 @@ def run_ui() -> None:
     # Root window
     # -----------------------------------------------------------------------
     root = tk.Tk()
-    root.title("MJMPE Offline Analysis")
+    root.title("MPJPE Offline Analysis")
     root.minsize(580, 560)
     root.resizable(True, False)
     PAD = 8
@@ -797,7 +797,7 @@ def run_ui() -> None:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Offline per-session MJMPE analysis (MediaPipe or OpenPose)."
+        description="Offline per-session MPJPE analysis (MediaPipe or OpenPose)."
     )
     parser.add_argument("session_dir", nargs="?",
                         help="Session directory, e.g. data/raw/p001/ "

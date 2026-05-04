@@ -1,15 +1,15 @@
 """test.py
-Live MJMPE (Mean Joint-to-MIDI-Pitch Error) accuracy test.
+Live MPJPE (Mean Joint-to-MIDI-Pitch Error) accuracy test.
 
 Mirrors record.py but writes nothing to disk.  At the end, shows a results
-overlay with the final MJMPE and note counts, then exits.
+overlay with the final MPJPE and note counts, then exits.
 
-MJMPE definition
+MPJPE definition
 ----------------
 For every MIDI note_on (velocity > 0) while at least one hand is visible:
     error_i = min distance (pixels) from any fingertip landmark (4,8,12,16,20)
               to the calibrated centre of the pressed key.
-MJMPE = mean(error_i)
+MPJPE = mean(error_i)
 
 Notes with no hand visible are counted as "missed" and excluded from the mean.
 
@@ -17,6 +17,7 @@ Key bindings
 ------------
   M   – toggle key mask overlay
   N   – toggle mask control panel
+  C   – toggle centre visualisation (line / dot)
   S   – toggle stats overlay
   ESC – stop test and show results
 """
@@ -49,7 +50,7 @@ except ImportError:
 # Constants
 # ---------------------------------------------------------------------------
 
-_WIN_NAME   = "Piano Finger Tracking \u2013 MJMPE Test"
+_WIN_NAME   = "Piano Finger Tracking \u2013 MPJPE Test"
 _FINGERTIPS = (4, 8, 12, 16, 20)   # MediaPipe fingertip landmark indices
 _FLASH_FRAMES = 4                   # frames to keep the per-note visual feedback
 
@@ -142,7 +143,7 @@ def _run_test_setup(cap, midi_ports: list, midi_port_idx: int,
         cv2.rectangle(ov, (0, 0), (frame.shape[1], frame.shape[0]), (0, 0, 0), -1, cv2.LINE_AA)
         cv2.addWeighted(ov, 0.55, frame, 0.45, 0, frame)
 
-        cv2.putText(frame, "MJMPE TEST  \u2013  Session Setup", (80, 80),
+        cv2.putText(frame, "MPJPE TEST  \u2013  Session Setup", (80, 80),
                     cv2.FONT_HERSHEY_SIMPLEX, 1.2, config.TEXT_COLOR_SETUP, 3)
         cv2.putText(frame, "Select MIDI port and camera, then press ENTER", (80, 115),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (160, 160, 160), 1)
@@ -249,7 +250,7 @@ def _run_test_setup(cap, midi_ports: list, midi_port_idx: int,
 
 
 # ---------------------------------------------------------------------------
-# MJMPE helpers
+# MPJPE helpers
 # ---------------------------------------------------------------------------
 
 def _key_center(mask: KeyMask, midi_note: int):
@@ -382,7 +383,7 @@ def _show_results(last_frame: np.ndarray, errors: list, missed: int,
     draw    = ImageDraw.Draw(pil_img)
 
     # Title — centred
-    title = "MJMPE TEST RESULTS"
+    title = "MPJPE TEST RESULTS"
     bbox  = draw.textbbox((0, 0), title, font=fnt_title)
     tw    = bbox[2] - bbox[0]
     draw.text((px + (pw - tw) // 2, py + 14), title, font=fnt_title, fill=(220, 220, 220))
@@ -409,7 +410,7 @@ def _show_results(last_frame: np.ndarray, errors: list, missed: int,
         dr_col    = ((0, 200, 80) if det_rate >= 90 else
                      (0, 220, 220) if det_rate >= 70 else (60, 80, 255))
 
-        row("MJMPE  (horizontal)",               f"{mjmpe:.1f} px  (med {median:.1f})",  62,  mjmpe_col)
+        row("MPJPE  (horizontal)",               f"{mjmpe:.1f} px  (med {median:.1f})",  62,  mjmpe_col)
         row(f"Accuracy  (<{half_key:.0f} px)",   f"{pct:.1f} %",                          94,  acc_col)
         row("Detection rate",                    f"{det_rate:.1f} %",                     126, dr_col)
         row("Notes matched",                     str(matched),                            158)
@@ -487,7 +488,7 @@ def run_test():
     if midi_ports:
         print(f"MIDI ports: {midi_ports}")
     else:
-        print("WARNING: No MIDI ports detected — MJMPE will not be computed.")
+        print("WARNING: No MIDI ports detected — MPJPE will not be computed.")
 
     # Setup screen
     midi_port_idx, cam_idx, cap, flip_y = _run_test_setup(cap, midi_ports, midi_port_idx, avail_cams, cam_idx)
@@ -502,7 +503,7 @@ def run_test():
 
     midi_port_name = midi_ports[midi_port_idx] if midi_ports else None
     print(f"MIDI port: {midi_port_name or 'none'}")
-    print("Running MJMPE test — press piano keys.  ESC: show results and quit.\n")
+    print("Running MPJPE test — press piano keys.  ESC: show results and quit.\n")
 
     # Load key calibration mask
     _cal_dir  = Path(__file__).parent.parent / "data" / "calibration"
@@ -541,7 +542,7 @@ def run_test():
     _key_xs = [k['center'][0] for k in mask.keys] if mask.keys else [_fw / 2]
     kb_mid  = (min(_key_xs) + max(_key_xs)) / 2
 
-    # MJMPE accumulators
+    # MPJPE accumulators
     errors         : list = []           # per-note horizontal errors (px) — x-axis only
     per_finger     : dict = {'L': {i: [] for i in range(5)},
                              'R': {i: [] for i in range(5)}}
@@ -577,7 +578,7 @@ def run_test():
         latest_lms = results.multi_hand_landmarks
         fw, fh     = frame.shape[1], frame.shape[0]
 
-        # --- Poll MIDI events and compute per-note MJMPE contribution ---
+        # --- Poll MIDI events and compute per-note MPJPE contribution ---
         if midi_port is not None:
             for msg in midi_port.iter_pending():
                 if msg.is_realtime:
@@ -598,7 +599,7 @@ def run_test():
                     # Identify playing finger: prefer fingertip inside key polygon.
                     # If no fingertip is over the key body the model has failed to
                     # place a landmark on the pressed key — count as detection_fail,
-                    # do NOT add to MJMPE (would contaminate measurement with ghost
+                    # do NOT add to MPJPE (would contaminate measurement with ghost
                     # landmarks or misidentified fingers).
                     key_poly = next(
                         (k['polygon'] for k in mask.keys if k['midi_note'] == msg.note),
@@ -641,7 +642,7 @@ def run_test():
         display = frame.copy()
 
         if show_mask:
-            mask.draw(display)
+            mask.draw(display, center_viz=panel.center_viz)
             draw_mask_handles(display, mask)
 
         _draw_hand_overlay(display, latest_lms, fw, fh,
@@ -689,7 +690,7 @@ def run_test():
                 cv2.putText(display, f"Lat: {total_latency_ms:4.1f} ms", (10, ys),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.7, config.TEXT_COLOR_LAT, 2)
 
-        # MJMPE HUD (top-right)
+        # MPJPE HUD (top-right)
         yr         = 35
         xr         = fw - 400
         matched    = len(errors)
@@ -705,7 +706,7 @@ def run_test():
                          (0, 220, 220) if pct_live >= 60 else (60, 80, 255))
             dr_col    = ((0, 200, 80) if det_rate >= 90 else
                          (0, 220, 220) if det_rate >= 70 else (60, 80, 255))
-            cv2.putText(display, f"MJMPE (x): {m:.1f} px",
+            cv2.putText(display, f"MPJPE (x): {m:.1f} px",
                         (xr, yr), cv2.FONT_HERSHEY_SIMPLEX, 0.70, mjmpe_col, 2)
             yr += 28
             cv2.putText(display, f"Accuracy:  {pct_live:.1f} %",
@@ -714,7 +715,7 @@ def run_test():
             cv2.putText(display, f"Det.Rate:  {det_rate:.1f} %",
                         (xr, yr), cv2.FONT_HERSHEY_SIMPLEX, 0.70, dr_col, 2)
         else:
-            cv2.putText(display, "MJMPE (x): --",
+            cv2.putText(display, "MPJPE (x): --",
                         (xr, yr), cv2.FONT_HERSHEY_SIMPLEX, 0.70, (200, 200, 200), 2)
             yr += 28
             cv2.putText(display, "Accuracy:  --",
@@ -734,7 +735,7 @@ def run_test():
         ctrl_lbl = f"N:ctrl({'ON' if panel.visible else 'OFF'})"
         st_lbl   = f"S:stats({'ON' if show_stats else 'OFF'})"
         cv2.putText(display,
-                    f"{mask_lbl}  {ctrl_lbl}  {st_lbl}  V:reset-warp  ESC:results+quit",
+                    f"{mask_lbl}  {ctrl_lbl}  {st_lbl}  C:ctr-viz  V:reset-warp  ESC:results+quit",
                     (10, hint_y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (200, 200, 200), 1)
 
         cv2.imshow(_WIN_NAME, display)
@@ -750,6 +751,8 @@ def run_test():
             panel.toggle()
         elif key == ord("s") or key == ord("S"):
             show_stats = not show_stats
+        elif key == ord("c") or key == ord("C"):
+            panel.center_viz = 'dot' if panel.center_viz == 'line' else 'line'
         elif key == ord("v") or key == ord("V"):
             mask.reset_warp()
 
@@ -760,7 +763,7 @@ def run_test():
         except Exception:
             pass
 
-    print(f"\n--- MJMPE Results (horizontal error) ---")
+    print(f"\n--- MPJPE Results (horizontal error) ---")
     if errors:
         half_key = mask.wkw * config.ACCURACY_THRESHOLD_RATIO
         matched  = len(errors)
@@ -768,7 +771,7 @@ def run_test():
         all_ev   = matched + total_df + missed
         pct      = 100.0 * sum(accurate.values()) / matched
         det_rate = 100.0 * matched / all_ev if all_ev else 0.0
-        print(f"  MJMPE (x):        {np.mean(errors):.2f} px")
+        print(f"  MPJPE (x):        {np.mean(errors):.2f} px")
         print(f"  Accuracy:         {pct:.1f} %  (error < {half_key:.0f} px = {config.ACCURACY_THRESHOLD_RATIO*100:.0f}% key width)")
         print(f"  Detection rate:   {det_rate:.1f} %  (landmark on key / all events)")
         print(f"  Notes matched:    {matched}")
