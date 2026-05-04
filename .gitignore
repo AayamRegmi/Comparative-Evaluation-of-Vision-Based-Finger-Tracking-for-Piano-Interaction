@@ -81,6 +81,9 @@ Thumbs.db
 ehthumbs.db
 desktop.ini
 
+# Word / Excel temporary lock files
+~$*
+
 # Dependency management
 Pipfile.lock
 poetry.lock
