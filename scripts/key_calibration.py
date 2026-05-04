@@ -468,7 +468,7 @@ class MaskControlPanel:
     """
     Floating OpenCV window with a controls reference table (left half)
     and interactive buttons (right half) that act on a KeyMask in real time.
-    Toggle visibility with N in record.py.
+    Toggle visibility with P in record.py.
     """
 
     WIN_NAME = "Mask Controls"
