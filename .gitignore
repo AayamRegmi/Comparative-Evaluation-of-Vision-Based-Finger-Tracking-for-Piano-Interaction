@@ -40,6 +40,7 @@ Thumbs.db
 *.swp
 
 # Media / data files you usually don't want in git
+*.pptx
 *.mp4
 *.avi
 *.mov
